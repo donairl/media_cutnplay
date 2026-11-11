@@ -1,1 +1,1 @@
-// Library entrypoint for media_cutnplay
+pub mod core;
