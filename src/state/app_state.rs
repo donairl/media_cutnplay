@@ -1,7 +1,9 @@
 use crate::core::metadata::MediaMetadata;
+use crate::worker::commands::WorkerCommand;
 use iced::widget::image;
 use std::path::PathBuf;
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::sync::mpsc::Sender;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExportStatus {
@@ -12,6 +14,7 @@ pub enum ExportStatus {
 }
 
 pub struct AppState {
+    pub cmd_tx: Sender<WorkerCommand>,
     pub queue: Vec<MediaMetadata>,
     pub active_index: Option<usize>,
 
@@ -31,14 +34,15 @@ pub struct AppState {
     pub current_pid: Pid,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    pub fn new(cmd_tx: Sender<WorkerCommand>) -> Self {
         let mut sys = System::new();
         let pid = Pid::from_u32(std::process::id());
         sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
         let ram_mb = sys.process(pid).map(|p| p.memory() as f32 / (1024.0 * 1024.0)).unwrap_or(0.0);
 
         Self {
+            cmd_tx,
             queue: Vec::new(),
             active_index: None,
             is_playing: false,
@@ -55,9 +59,7 @@ impl Default for AppState {
             current_pid: pid,
         }
     }
-}
 
-impl AppState {
     pub fn refresh_memory(&mut self) {
         self.system_monitor.refresh_processes(ProcessesToUpdate::Some(&[self.current_pid]), true);
         if let Some(proc) = self.system_monitor.process(self.current_pid) {
