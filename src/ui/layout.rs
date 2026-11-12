@@ -12,6 +12,9 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     let content: Element<'a, Message> = {
         // Hidden side panels leave the row entirely; the player takes the space.
         let mut panes = row![action_bar::view(state)];
+        if let Some(kind) = state.adjust_panel {
+            panes = panes.push(action_bar::adjust_panel(state, kind));
+        }
         if state.show_queue_panel {
             panes = panes.push(queue_view::view(state));
         }

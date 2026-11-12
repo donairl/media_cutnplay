@@ -271,6 +271,26 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::ToggleAdjustPanel(kind) => {
+            state.adjust_panel = (state.adjust_panel != Some(kind)).then_some(kind);
+            Task::none()
+        }
+
+        Message::SetAdjust(kind, value) => {
+            state.adjust.set(kind, value);
+            Task::none()
+        }
+
+        Message::ResetAdjust(kind) => {
+            state.adjust.set(kind, 0.0);
+            Task::none()
+        }
+
+        Message::ToggleMonochrome => {
+            state.adjust.monochrome = !state.adjust.monochrome;
+            Task::none()
+        }
+
         Message::SetInPoint => {
             state.in_point = Some(state.current_timestamp);
             Task::none()

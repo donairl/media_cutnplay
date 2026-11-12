@@ -15,6 +15,51 @@ pub enum ExportStatus {
     Failed(String),
 }
 
+/// Picture adjustments applied to the preview on the GPU. They never touch
+/// the exported file: cuts are lossless stream copies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoAdjust {
+    /// -1.0 (darkest) ..= 1.0 (brightest); 0.0 leaves the picture unchanged.
+    pub brightness: f32,
+    /// -1.0 (flat grey) ..= 1.0 (double contrast); 0.0 leaves it unchanged.
+    pub contrast: f32,
+    pub monochrome: bool,
+}
+
+impl Default for VideoAdjust {
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 0.0,
+            monochrome: false,
+        }
+    }
+}
+
+impl VideoAdjust {
+    pub fn get(&self, kind: AdjustKind) -> f32 {
+        match kind {
+            AdjustKind::Brightness => self.brightness,
+            AdjustKind::Contrast => self.contrast,
+        }
+    }
+
+    pub fn set(&mut self, kind: AdjustKind, value: f32) {
+        let value = value.clamp(-1.0, 1.0);
+        match kind {
+            AdjustKind::Brightness => self.brightness = value,
+            AdjustKind::Contrast => self.contrast = value,
+        }
+    }
+}
+
+/// The slider-driven adjustments, each with its own action-bar flyout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdjustKind {
+    Brightness,
+    Contrast,
+}
+
 pub struct AppState {
     pub cmd_tx: Sender<WorkerCommand>,
     pub player: Player,
@@ -33,6 +78,9 @@ pub struct AppState {
     /// Side panels, toggled from the action bar.
     pub show_queue_panel: bool,
     pub show_export_panel: bool,
+    /// Preview picture settings and the flyout currently open for them.
+    pub adjust: VideoAdjust,
+    pub adjust_panel: Option<AdjustKind>,
     pub current_timestamp: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
@@ -69,6 +117,8 @@ impl AppState {
             window_height: 720.0,
             show_queue_panel: true,
             show_export_panel: true,
+            adjust: VideoAdjust::default(),
+            adjust_panel: None,
             current_timestamp: 0.0,
             in_point: None,
             out_point: None,

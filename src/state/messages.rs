@@ -1,5 +1,6 @@
 use crate::core::metadata::MediaMetadata;
 use crate::player::PlayerEvent;
+use crate::state::app_state::AdjustKind;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,12 @@ pub enum Message {
     // Side panels
     ToggleQueuePanel,
     ToggleExportPanel,
+
+    // Video settings (preview only)
+    ToggleAdjustPanel(AdjustKind),
+    SetAdjust(AdjustKind, f32),
+    ResetAdjust(AdjustKind),
+    ToggleMonochrome,
 
     // Cut Markers
     SetInPoint,

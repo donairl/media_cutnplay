@@ -66,6 +66,7 @@ fn preview<'a>(state: &'a AppState) -> Element<'a, Message> {
         container(
             shader(VideoProgram {
                 frame: frame.clone(),
+                adjust: state.adjust,
             })
             .width(Length::Fill)
             .height(Length::Fill),

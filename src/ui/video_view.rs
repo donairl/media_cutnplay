@@ -5,6 +5,7 @@
 //! stays alive and each frame is written into it synchronously before drawing.
 
 use crate::player::VideoFrame;
+use crate::state::app_state::VideoAdjust;
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
@@ -13,6 +14,7 @@ use std::sync::Arc;
 
 pub struct VideoProgram {
     pub frame: Arc<VideoFrame>,
+    pub adjust: VideoAdjust,
 }
 
 impl<Message> shader::Program<Message> for VideoProgram {
@@ -22,6 +24,7 @@ impl<Message> shader::Program<Message> for VideoProgram {
     fn draw(&self, _state: &(), _cursor: mouse::Cursor, _bounds: Rectangle) -> VideoPrimitive {
         VideoPrimitive {
             frame: self.frame.clone(),
+            adjust: self.adjust,
         }
     }
 }
@@ -29,6 +32,7 @@ impl<Message> shader::Program<Message> for VideoProgram {
 #[derive(Debug)]
 pub struct VideoPrimitive {
     frame: Arc<VideoFrame>,
+    adjust: VideoAdjust,
 }
 
 struct Target {
@@ -44,13 +48,22 @@ pub struct VideoPipeline {
     sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
     texture_format: wgpu::TextureFormat,
+    /// The texture decodes sRGB on sampling, so the shader sees linear light.
+    linear_sampling: bool,
     target: Option<Target>,
     uploaded: Option<u64>,
 }
 
+/// Byte size of the WGSL `Uniforms` struct.
+const UNIFORM_SIZE: usize = 32;
+
 const SHADER: &str = r#"
 struct Uniforms {
     scale: vec2<f32>,
+    brightness: f32,
+    contrast: f32,
+    monochrome: f32,
+    linear_sampling: f32,
     _pad: vec2<f32>,
 }
 
@@ -79,9 +92,37 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
     return out;
 }
 
+fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, c <= vec3<f32>(0.0031308));
+}
+
+fn srgb_decode(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(textureSample(frame, frame_sampler, in.uv).rgb, 1.0);
+    var color = textureSample(frame, frame_sampler, in.uv).rgb;
+
+    // Adjust the display-encoded values, as video picture controls do.
+    let encoded = u.linear_sampling > 0.5;
+    if encoded {
+        color = srgb_encode(color);
+    }
+    if u.monochrome > 0.5 {
+        color = vec3<f32>(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    }
+    color = (color - 0.5) * (1.0 + u.contrast) + 0.5 + u.brightness * 0.5;
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    if encoded {
+        color = srgb_decode(color);
+    }
+
+    return vec4<f32>(color, 1.0);
 }
 "#;
 
@@ -97,7 +138,7 @@ impl shader::Pipeline for VideoPipeline {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -168,7 +209,7 @@ impl shader::Pipeline for VideoPipeline {
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("video uniforms"),
-            size: 16,
+            size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -187,6 +228,7 @@ impl shader::Pipeline for VideoPipeline {
             sampler,
             uniforms,
             texture_format,
+            linear_sampling: format.is_srgb(),
             target: None,
             uploaded: None,
         }
@@ -301,9 +343,19 @@ impl shader::Primitive for VideoPrimitive {
         } else {
             [1.0, bounds_aspect / frame_aspect]
         };
-        let mut bytes = [0u8; 16];
-        bytes[0..4].copy_from_slice(&scale[0].to_ne_bytes());
-        bytes[4..8].copy_from_slice(&scale[1].to_ne_bytes());
+        let flag = |on: bool| if on { 1.0f32 } else { 0.0 };
+        let fields = [
+            scale[0],
+            scale[1],
+            self.adjust.brightness,
+            self.adjust.contrast,
+            flag(self.adjust.monochrome),
+            flag(pipeline.linear_sampling),
+        ];
+        let mut bytes = [0u8; UNIFORM_SIZE];
+        for (chunk, value) in bytes.chunks_exact_mut(4).zip(fields) {
+            chunk.copy_from_slice(&value.to_ne_bytes());
+        }
         queue.write_buffer(&pipeline.uniforms, 0, &bytes);
     }
 
