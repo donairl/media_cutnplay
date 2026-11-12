@@ -1,10 +1,11 @@
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
-use iced::widget::{button, column, container, progress_bar, space, text};
-use iced::{Element, Length};
+use crate::ui::{icons, theme};
+use iced::widget::{button, column, container, progress_bar, row, space, text};
+use iced::{Alignment, Color, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
-    let header = text("Cut & Export").size(16);
+    let header = theme::title("Cut & Export");
 
     let info_section: Element<'a, Message> = if let Some(item) = state.active_item() {
         let video_codec = item
@@ -18,36 +19,36 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
             .map(|a| a.codec.as_str())
             .unwrap_or("None");
 
-        column![
-            text("Source Specs").size(13),
-            text(format!("Format: {}", item.format_name)).size(11),
-            text(format!("Video: {video_codec}")).size(11),
-            text(format!("Audio: {audio_codec}")).size(11),
-            text(format!("Bitrate: {} kbps", item.bitrate / 1000)).size(11),
-        ]
-        .spacing(4)
-        .into()
+        section_card(
+            "Source",
+            column![
+                spec_row("Format", item.format_name.clone()),
+                spec_row("Video", video_codec.to_string()),
+                spec_row("Audio", audio_codec.to_string()),
+                spec_row("Bitrate", format!("{} kbps", item.bitrate / 1000)),
+            ]
+            .spacing(6)
+            .into(),
+        )
     } else {
-        text("No media selected").size(12).into()
+        section_card("Source", theme::supporting("No media selected").into())
     };
-
-    let cut_mode_info = column![
-        text("Cut Strategy").size(13),
-        text("Mode: Lossless Cut (-c copy)").size(11),
-        text("Aligns instantly to keyframes without re-encoding quality loss.").size(10),
-    ]
-    .spacing(3);
 
     let cut_duration = match (state.in_point, state.out_point) {
         (Some(i), Some(o)) if o > i => format_time(o - i),
         _ => "--:--:--".into(),
     };
 
-    let cut_points_section = column![
-        text("Cut Range").size(13),
-        text(format!("Duration: {cut_duration}")).size(12),
-    ]
-    .spacing(4);
+    let cut_section = section_card(
+        "Cut",
+        column![
+            spec_row("Mode", "Lossless (-c copy)".to_string()),
+            spec_row("Duration", cut_duration),
+            theme::supporting("Aligns to keyframes instantly, without re-encoding quality loss."),
+        ]
+        .spacing(6)
+        .into(),
+    );
 
     let output_str = state
         .target_output_path
@@ -56,34 +57,36 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .and_then(|n| n.to_str())
         .unwrap_or("Default: <input>_cut.<ext>");
 
-    let output_section = column![
-        text("Destination").size(13),
-        text(output_str).size(11),
-        button("Choose File...").on_press(Message::SelectOutputPath),
-    ]
-    .spacing(5);
+    let output_section = section_card(
+        "Destination",
+        column![
+            theme::supporting(output_str).wrapping(text::Wrapping::WordOrGlyph),
+            button(theme::icon_label(icons::FOLDER_OPEN, "Choose file..."))
+                .padding([8.0, 16.0])
+                .style(theme::outlined)
+                .on_press(Message::SelectOutputPath),
+        ]
+        .spacing(10)
+        .into(),
+    );
 
     let action_section: Element<'a, Message> = match &state.export_status {
         ExportStatus::Idle => {
             let can_cut = state.active_item().is_some()
-                && state.in_point.is_some()
-                && state.out_point.is_some()
-                && state.out_point.unwrap() > state.in_point.unwrap();
+                && matches!((state.in_point, state.out_point), (Some(i), Some(o)) if o > i);
 
-            let mut btn = button(text("▶ START LOSSLESS CUT").size(13))
-                .width(Length::Fill);
-
-            if can_cut {
-                btn = btn.on_press(Message::StartLosslessCut);
-            }
-
-            column![btn].into()
+            action_button(icons::CONTENT_CUT, "Start lossless cut", theme::filled)
+                .on_press_maybe(can_cut.then_some(Message::StartLosslessCut))
+                .into()
         }
         ExportStatus::Processing { progress, .. } => column![
-            text(format!("Cutting... {:.0}%", progress * 100.0)).size(12),
-            progress_bar(0.0..=1.0, *progress).length(Length::Fill),
+            theme::body(format!("Cutting... {:.0}%", progress * 100.0)),
+            progress_bar(0.0..=1.0, *progress)
+                .length(Length::Fill)
+                .girth(theme::PROGRESS_GIRTH)
+                .style(theme::progress),
         ]
-        .spacing(6)
+        .spacing(10)
         .into(),
         ExportStatus::Completed { output_path } => {
             let filename = output_path
@@ -91,17 +94,21 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("File");
             column![
-                text(format!("✓ Cut Complete: {filename}")).size(12),
-                button("Cut Again").on_press(Message::StartLosslessCut).width(Length::Fill),
+                status_line(
+                    icons::CHECK_CIRCLE,
+                    format!("Cut complete: {filename}"),
+                    theme::SUCCESS,
+                ),
+                action_button(icons::CONTENT_CUT, "Cut again", theme::tonal).on_press(Message::StartLosslessCut),
             ]
-            .spacing(6)
+            .spacing(10)
             .into()
         }
         ExportStatus::Failed(err) => column![
-            text(format!("✕ Error: {err}")).size(11),
-            button("Retry").on_press(Message::StartLosslessCut).width(Length::Fill),
+            status_line(icons::ERROR, format!("Error: {err}"), theme::ERROR),
+            action_button(icons::CONTENT_CUT, "Retry", theme::tonal).on_press(Message::StartLosslessCut),
         ]
-        .spacing(6)
+        .spacing(10)
         .into(),
     };
 
@@ -109,18 +116,66 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         column![
             header,
             info_section,
-            cut_mode_info,
-            cut_points_section,
+            cut_section,
             output_section,
             space().height(Length::Fill),
             action_section,
         ]
-        .spacing(14),
+        .spacing(12),
     )
-    .padding(12)
-    .width(Length::Fixed(280.0))
+    .padding(16)
+    .width(Length::Fixed(300.0))
     .height(Length::Fill)
+    .style(theme::card)
     .into()
+}
+
+/// A titled card grouping related settings.
+fn section_card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
+    container(column![theme::section(title), content].spacing(8))
+        .padding(16)
+        .width(Length::Fill)
+        .style(theme::inner_card)
+        .into()
+}
+
+/// Label on the left, value on the right.
+fn spec_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+    row![
+        theme::supporting(label),
+        space().width(Length::Fill),
+        text(value).size(12).color(theme::ON_SURFACE),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Result message with a leading status icon.
+fn status_line<'a>(glyph: char, message: String, color: Color) -> Element<'a, Message> {
+    row![
+        icons::icon(glyph, 18).color(color),
+        text(message)
+            .size(12)
+            .color(color)
+            .width(Length::Fill)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Full-width primary action at the bottom of the pane.
+fn action_button<'a>(
+    glyph: char,
+    label: &'a str,
+    style: fn(&iced::Theme, button::Status) -> button::Style,
+) -> button::Button<'a, Message> {
+    button(container(theme::icon_label(glyph, label)).center_x(Length::Fill))
+    .width(Length::Fill)
+    .padding(theme::BUTTON_PADDING)
+    .style(style)
 }
 
 fn format_time(sec: f64) -> String {

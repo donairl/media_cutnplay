@@ -1,11 +1,13 @@
 use crate::state::app_state::AppState;
 use crate::state::messages::Message;
+use crate::ui::{icons, theme};
 use crate::ui::video_view::VideoProgram;
-use iced::widget::{button, column, container, row, shader, slider, space, text};
-use iced::{Alignment, Color, Element, Length};
+use iced::widget::{button, column, container, row, shader, slider, space, text, tooltip};
+use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     let duration = state.active_duration();
+    let has_media = state.active_item().is_some();
 
     // 1. Preview Viewport
     let preview_element: Element<'a, Message> = if let Some(frame) = &state.current_frame {
@@ -18,13 +20,13 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_theme| container::Style::default().background(Color::BLACK))
+        .style(theme::video_backdrop)
         .into()
     } else {
         container(
             column![
-                text("No Video Loaded").size(18),
-                text("Add and select a media file to begin previewing and cutting").size(13),
+                theme::title("No video loaded"),
+                theme::supporting("Add and select a media file to begin previewing and cutting"),
             ]
             .spacing(8)
             .align_x(Alignment::Center),
@@ -33,43 +35,82 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
+        .style(theme::placeholder)
         .into()
     };
 
-    // 2. Timecode Readout
-    let timecode_str = format!(
-        "{} / {}",
-        format_time(state.current_timestamp),
-        format_time(duration)
-    );
-
-    // 3. Transport Toolbar
-    let play_label = if state.is_playing { "⏸ Pause" } else { "▶ Play" };
-    let fs_label = if state.is_fullscreen { "⛶ Exit Fullscreen" } else { "⛶ Fullscreen" };
-
-    let transport_bar = row![
-        button("⏮ -1s").on_press(Message::StepFrame(-25)),
-        button("◀ Prev").on_press(Message::StepFrame(-1)),
-        button(play_label).on_press(Message::TogglePlay),
-        button("Next ▶").on_press(Message::StepFrame(1)),
-        button("⏭ +1s").on_press(Message::StepFrame(25)),
-        space().width(Length::Fill),
-        text(timecode_str).size(13),
-        space().width(Length::Fill),
-        button(fs_label).on_press(Message::ToggleFullscreen),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    // 4. Scrubber & Cut Markers
+    // 2. Scrubber
     let scrubber = slider(
         0.0..=duration.max(0.001),
         state.current_timestamp,
         Message::Seek,
     )
     .step(0.01)
-    .width(Length::Fill);
+    .width(Length::Fill)
+    .height(theme::SLIDER_HEIGHT)
+    .style(theme::scrubber);
 
+    // 3. Transport Toolbar
+    let timecode = row![
+        text(format_time(state.current_timestamp))
+            .size(14)
+            .color(theme::ON_SURFACE),
+        theme::supporting(format!("/ {}", format_time(duration))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let step_button = |glyph: char, hint: &'static str, steps: i32| {
+        with_tooltip(
+            button(icons::icon(glyph, 20))
+                .padding(theme::ICON_PADDING)
+                .style(theme::icon_button)
+                .on_press_maybe(has_media.then_some(Message::StepFrame(steps))),
+            hint,
+        )
+    };
+
+    let (play_icon, play_label) = if state.is_playing {
+        (icons::PAUSE, "Pause")
+    } else {
+        (icons::PLAY_ARROW, "Play")
+    };
+    let play_button = button(theme::icon_label(play_icon, play_label))
+        .padding([14.0, 20.0])
+        .style(theme::fab)
+        .on_press_maybe(has_media.then_some(Message::TogglePlay));
+
+    let (fs_icon, fs_hint) = if state.is_fullscreen {
+        (icons::FULLSCREEN_EXIT, "Exit fullscreen")
+    } else {
+        (icons::FULLSCREEN, "Fullscreen")
+    };
+
+    let transport_bar = row![
+        container(timecode).width(Length::FillPortion(1)),
+        row![
+            step_button(icons::FAST_REWIND, "Back 1 s", -25),
+            step_button(icons::SKIP_PREVIOUS, "Previous frame", -1),
+            play_button,
+            step_button(icons::SKIP_NEXT, "Next frame", 1),
+            step_button(icons::FAST_FORWARD, "Forward 1 s", 25),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+        container(with_tooltip(
+            button(icons::icon(fs_icon, 20))
+                .padding(theme::ICON_PADDING)
+                .style(theme::icon_button)
+                .on_press(Message::ToggleFullscreen),
+            fs_hint,
+        ))
+        .width(Length::FillPortion(1))
+        .align_x(Alignment::End),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    // 4. Cut Markers
     let in_str = state
         .in_point
         .map(format_time)
@@ -79,14 +120,32 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .map(format_time)
         .unwrap_or_else(|| "--:--:--".into());
 
+    let marker_button = |label: &'static str, message: Message| {
+        button(theme::label(label))
+            .padding([8.0, 16.0])
+            .style(theme::tonal)
+            .on_press_maybe(has_media.then_some(message))
+    };
+
+    let marker_chip = |value: String| {
+        container(text(value).size(12))
+            .padding([6.0, 12.0])
+            .style(theme::chip)
+    };
+
+    let has_points = state.in_point.is_some() || state.out_point.is_some();
+
     let markers_bar = row![
-        button("Set [ In ]").on_press(Message::SetInPoint),
-        text(format!("In: {in_str}")).size(12),
-        space().width(Length::Fixed(20.0)),
-        button("Set [ Out ]").on_press(Message::SetOutPoint),
-        text(format!("Out: {out_str}")).size(12),
+        marker_button("Set In", Message::SetInPoint),
+        marker_chip(in_str),
+        space().width(Length::Fixed(12.0)),
+        marker_button("Set Out", Message::SetOutPoint),
+        marker_chip(out_str),
         space().width(Length::Fill),
-        button("Clear Points").on_press(Message::ClearPoints),
+        button(theme::label("Clear points"))
+            .padding(theme::COMPACT_PADDING)
+            .style(theme::text_button)
+            .on_press_maybe(has_points.then_some(Message::ClearPoints)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -94,15 +153,32 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     container(
         column![
             preview_element,
-            transport_bar,
             scrubber,
+            transport_bar,
             markers_bar,
         ]
-        .spacing(10),
+        .spacing(12),
     )
-    .padding(12)
+    .padding(16)
     .width(Length::Fill)
     .height(Length::Fill)
+    .style(theme::card)
+    .into()
+}
+
+/// Wraps an icon-only control with a plain tooltip naming its action.
+fn with_tooltip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    hint: &'a str,
+) -> Element<'a, Message> {
+    tooltip(
+        content,
+        container(text(hint).size(12))
+            .padding([4.0, 8.0])
+            .style(theme::tooltip),
+        tooltip::Position::Top,
+    )
+    .gap(4)
     .into()
 }
 

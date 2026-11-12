@@ -1,25 +1,38 @@
 use crate::state::app_state::AppState;
 use crate::state::messages::Message;
+use crate::ui::{icons, theme};
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
+    let clear_btn = button(theme::label("Clear"))
+        .padding(theme::COMPACT_PADDING)
+        .style(theme::text_button)
+        .on_press_maybe((!state.queue.is_empty()).then_some(Message::ClearQueue));
+
     let header = row![
-        text("Media Queue").size(16),
+        theme::title("Media Queue"),
         space().width(Length::Fill),
-        button("+ Add").on_press(Message::OpenFilePicker),
-        button("Clear").on_press(Message::ClearQueue),
+        clear_btn,
+        button(theme::icon_label(icons::ADD, "Add"))
+            .padding([8.0, 16.0])
+            .style(theme::tonal)
+            .on_press(Message::OpenFilePicker),
     ]
-    .spacing(8)
+    .spacing(4)
     .align_y(Alignment::Center);
 
     let list_content: Element<'a, Message> = if state.queue.is_empty() {
         container(
-            text("No media files added.\nClick '+ Add' to select files.")
-                .size(13),
+            column![
+                theme::body("No media yet"),
+                theme::supporting("Use Add to select files"),
+            ]
+            .spacing(4)
+            .align_x(Alignment::Center),
         )
-        .padding(16)
         .center_x(Length::Fill)
+        .center_y(Length::Fill)
         .into()
     } else {
         let items: Vec<Element<'a, Message>> = state
@@ -43,51 +56,46 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 let size_mb = item.file_size_bytes as f64 / (1024.0 * 1024.0);
                 let dur = format_time(item.duration_secs);
 
+                // Headline inherits the list item's content color;
+                // the supporting line stays in the variant color.
                 let item_btn = button(
                     column![
-                        text(name).size(13),
-                        row![
-                            text(resolution_text).size(11),
-                            text("•").size(11),
-                            text(dur).size(11),
-                            text("•").size(11),
-                            text(format!("{:.1} MB", size_mb)).size(11),
-                        ]
-                        .spacing(4),
+                        text(name).size(14).wrapping(text::Wrapping::WordOrGlyph),
+                        theme::supporting(format!(
+                            "{resolution_text} • {dur} • {size_mb:.1} MB"
+                        )),
                     ]
-                    .spacing(3),
+                    .spacing(2),
                 )
                 .width(Length::Fill)
+                .padding([10.0, 16.0])
+                .style(move |_theme, status| theme::list_item(is_selected, status))
                 .on_press(Message::SelectQueueItem(idx));
 
-                let remove_btn = button("✕")
+                let remove_btn = button(icons::icon(icons::CLOSE, 18))
+                    .padding(8)
+                    .style(theme::icon_button)
                     .on_press(Message::RemoveQueueItem(idx));
 
-                let row_content = row![item_btn, remove_btn]
-                    .spacing(6)
-                    .align_y(Alignment::Center);
-
-                if is_selected {
-                    container(row_content)
-                        .padding(2)
-                        .into()
-                } else {
-                    container(row_content)
-                        .padding(2)
-                        .into()
-                }
+                row![item_btn, remove_btn]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into()
             })
             .collect();
 
-        scrollable(column(items).spacing(6))
+        scrollable(column(items).spacing(4))
             .height(Length::Fill)
+            .spacing(4)
+            .style(theme::scroll)
             .into()
     };
 
-    container(column![header, list_content].spacing(10))
-        .padding(12)
-        .width(Length::Fixed(280.0))
+    container(column![header, list_content].spacing(12))
+        .padding(16)
+        .width(Length::Fixed(300.0))
         .height(Length::Fill)
+        .style(theme::card)
         .into()
 }
 

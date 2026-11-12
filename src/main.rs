@@ -3,7 +3,7 @@ use iced::{window, Element, Subscription, Task};
 use media_cutnplay::state::app_state::{AppState, ExportStatus};
 use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
-use media_cutnplay::ui::layout;
+use media_cutnplay::ui::{icons, layout, theme};
 use media_cutnplay::worker::actor::run_worker;
 use media_cutnplay::worker::commands::{WorkerCommand, WorkerEvent};
 use std::path::PathBuf;
@@ -16,6 +16,8 @@ fn main() -> iced::Result {
     iced::application(boot, update, view)
         .title("Media CutNPlay - Offline Bulk Media Transcoder & Smart Cutter")
         .subscription(subscription)
+        .font(icons::FONT_BYTES)
+        .theme(|_state: &AppState| theme::app_theme())
         .window(window::Settings {
             size: iced::Size::new(1150.0, 720.0),
             min_size: Some(iced::Size::new(800.0, 500.0)),
