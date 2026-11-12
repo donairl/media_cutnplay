@@ -3,6 +3,7 @@ use crate::worker::commands::WorkerCommand;
 use crate::player::{Player, VideoFrame};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::mpsc::Sender;
 
@@ -22,6 +23,13 @@ pub struct AppState {
 
     pub is_playing: bool,
     pub is_fullscreen: bool,
+    /// Fullscreen controls: wanted state and slide progress (0 hidden, 1 shown).
+    pub controls_visible: bool,
+    pub controls_reveal: f32,
+    pub controls_anim_last: Option<Instant>,
+    pub cursor_y: Option<f32>,
+    pub pointer_pressed: bool,
+    pub window_height: f32,
     pub current_timestamp: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
@@ -50,6 +58,12 @@ impl AppState {
             active_index: None,
             is_playing: false,
             is_fullscreen: false,
+            controls_visible: false,
+            controls_reveal: 0.0,
+            controls_anim_last: None,
+            cursor_y: None,
+            pointer_pressed: false,
+            window_height: 720.0,
             current_timestamp: 0.0,
             in_point: None,
             out_point: None,
@@ -68,6 +82,12 @@ impl AppState {
         if let Some(proc) = self.system_monitor.process(self.current_pid) {
             self.ram_usage_mb = proc.memory() as f32 / (1024.0 * 1024.0);
         }
+    }
+
+    /// True while the fullscreen controls are still sliding in or out.
+    pub fn controls_animating(&self) -> bool {
+        let target = if self.controls_visible { 1.0 } else { 0.0 };
+        self.is_fullscreen && self.controls_reveal != target
     }
 
     pub fn active_item(&self) -> Option<&MediaMetadata> {

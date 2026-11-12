@@ -1,13 +1,13 @@
 use iced::futures::SinkExt;
-use iced::{window, Element, Subscription, Task};
+use iced::{event, keyboard, mouse, window, Element, Event, Subscription, Task};
 use media_cutnplay::state::app_state::{AppState, ExportStatus};
 use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
-use media_cutnplay::ui::{icons, layout, theme};
+use media_cutnplay::ui::{icons, layout, player_view, theme};
 use media_cutnplay::worker::actor::run_worker;
 use media_cutnplay::worker::commands::{WorkerCommand, WorkerEvent};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 fn main() -> iced::Result {
@@ -212,11 +212,18 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
         Message::FrameTick => {
             present(state);
+            animate_controls(state);
             Task::none()
         }
 
         Message::ToggleFullscreen => {
             state.is_fullscreen = !state.is_fullscreen;
+            // Always enter (and leave) with a clean screen.
+            state.controls_visible = false;
+            state.controls_reveal = 0.0;
+            state.controls_anim_last = None;
+            state.cursor_y = None;
+            state.pointer_pressed = false;
             let mode = if state.is_fullscreen {
                 window::Mode::Fullscreen
             } else {
@@ -225,6 +232,30 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             window::latest().and_then(move |id| {
                 window::set_mode(id, mode)
             })
+        }
+
+        Message::WindowResized(height) => {
+            state.window_height = height;
+            refresh_controls(state);
+            Task::none()
+        }
+
+        Message::CursorMoved(y) => {
+            state.cursor_y = Some(y);
+            refresh_controls(state);
+            Task::none()
+        }
+
+        Message::CursorLeft => {
+            state.cursor_y = None;
+            refresh_controls(state);
+            Task::none()
+        }
+
+        Message::PointerPressed(pressed) => {
+            state.pointer_pressed = pressed;
+            refresh_controls(state);
+            Task::none()
         }
 
         Message::SetInPoint => {
@@ -357,6 +388,47 @@ fn present(state: &mut AppState) {
     }
 }
 
+/// Decides whether the fullscreen controls should be up: summoned only at the
+/// very bottom edge, then kept while the cursor stays over them. A drag in
+/// progress (e.g. scrubbing) never dismisses them.
+fn refresh_controls(state: &mut AppState) {
+    let zone = if state.controls_visible {
+        player_view::FULLSCREEN_KEEP_ZONE
+    } else {
+        player_view::FULLSCREEN_REVEAL_ZONE
+    };
+    let near_bottom = state
+        .cursor_y
+        .is_some_and(|y| y >= state.window_height - zone);
+
+    if near_bottom {
+        state.controls_visible = true;
+    } else if !state.pointer_pressed {
+        state.controls_visible = false;
+    }
+}
+
+/// Advances the slide of the fullscreen controls toward its target.
+fn animate_controls(state: &mut AppState) {
+    const SLIDE_SECS: f32 = 0.18;
+
+    if !state.controls_animating() {
+        state.controls_anim_last = None;
+        return;
+    }
+    let now = Instant::now();
+    let dt = state
+        .controls_anim_last
+        .map_or(1.0 / 60.0, |last| (now - last).as_secs_f32().min(0.05));
+    let step = dt / SLIDE_SECS;
+    state.controls_reveal = if state.controls_visible {
+        (state.controls_reveal + step).min(1.0)
+    } else {
+        (state.controls_reveal - step).max(0.0)
+    };
+    state.controls_anim_last = Some(now);
+}
+
 fn reset_transport(state: &mut AppState) {
     state.is_playing = false;
     state.current_timestamp = 0.0;
@@ -377,14 +449,49 @@ fn close_player(state: &mut AppState) {
 }
 
 fn subscription(state: &AppState) -> Subscription<Message> {
-    let telemetry = iced::time::every(Duration::from_secs(1)).map(|_| Message::TickTelemetry);
+    let mut subs = vec![
+        iced::time::every(Duration::from_secs(1)).map(|_| Message::TickTelemetry),
+        iced::event::listen_with(window_events),
+    ];
 
-    if state.is_playing {
+    if state.is_fullscreen {
+        subs.push(iced::event::listen_with(fullscreen_events));
+    }
+
+    if state.is_playing || state.controls_animating() {
         // One tick per display refresh; the audio clock decides which frame.
-        let frames = window::frames().map(|_| Message::FrameTick);
-        Subscription::batch([telemetry, frames])
-    } else {
-        telemetry
+        subs.push(window::frames().map(|_| Message::FrameTick));
+    }
+
+    Subscription::batch(subs)
+}
+
+fn window_events(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    match event {
+        Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size.height)),
+        _ => None,
+    }
+}
+
+/// Pointer and keyboard input that matters only in fullscreen. Captured
+/// events count too: the cursor is usually over a widget when it matters.
+fn fullscreen_events(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::CursorMoved(position.y))
+        }
+        Event::Mouse(mouse::Event::CursorLeft) => Some(Message::CursorLeft),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            Some(Message::PointerPressed(true))
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::PointerPressed(false))
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::ToggleFullscreen),
+        _ => None,
     }
 }
 

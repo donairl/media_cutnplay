@@ -156,6 +156,19 @@ pub fn video_backdrop(_theme: &Theme) -> container::Style {
     filled_container(Color::BLACK, 0.0)
 }
 
+/// Transport bar hovering over fullscreen video.
+pub fn floating_bar(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color { a: 0.92, ..SURFACE_CONTAINER_HIGH }.into()),
+        shadow: iced::Shadow {
+            color: Color { a: 0.5, ..Color::BLACK },
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 24.0,
+        },
+        ..filled_container(SURFACE_CONTAINER_HIGH, RADIUS_LARGE)
+    }
+}
+
 pub fn status_bar(_theme: &Theme) -> container::Style {
     filled_container(SURFACE_CONTAINER, RADIUS_FULL)
 }

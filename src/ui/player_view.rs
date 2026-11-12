@@ -2,15 +2,67 @@ use crate::state::app_state::AppState;
 use crate::state::messages::Message;
 use crate::ui::{icons, theme};
 use crate::ui::video_view::VideoProgram;
-use iced::widget::{button, column, container, row, shader, slider, space, text, tooltip};
-use iced::{Alignment, Element, Length};
+use iced::widget::{
+    button, column, container, float, row, shader, slider, space, stack, text, tooltip,
+};
+use iced::{Alignment, Element, Length, Vector};
+
+/// Distance from the bottom edge that summons the fullscreen controls.
+pub const FULLSCREEN_REVEAL_ZONE: f32 = 6.0;
+/// While shown, the controls stay as long as the cursor is within this band.
+pub const FULLSCREEN_KEEP_ZONE: f32 = 190.0;
+const FULLSCREEN_BAR_MARGIN: f32 = 24.0;
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
-    let duration = state.active_duration();
-    let has_media = state.active_item().is_some();
+    container(
+        column![
+            preview(state),
+            scrubber(state),
+            transport_bar(state),
+            markers_bar(state),
+        ]
+        .spacing(12),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(theme::card)
+    .into()
+}
 
-    // 1. Preview Viewport
-    let preview_element: Element<'a, Message> = if let Some(frame) = &state.current_frame {
+/// Fullscreen: nothing but the picture. The transport floats up from the
+/// bottom edge while `controls_reveal` is above zero.
+pub fn fullscreen_view<'a>(state: &'a AppState) -> Element<'a, Message> {
+    let video = preview(state);
+    if state.controls_reveal <= 0.0 {
+        return video;
+    }
+
+    let bar = container(column![scrubber(state), transport_bar(state)].spacing(8))
+        .padding([12.0, 20.0])
+        .max_width(960.0)
+        .style(theme::floating_bar);
+
+    // Ease-out cubic; the bar travels its own height plus the margin.
+    let hidden = (1.0 - state.controls_reveal).powi(3);
+    let sliding = float(bar).translate(move |bounds, _viewport| {
+        Vector::new(0.0, hidden * (bounds.height + FULLSCREEN_BAR_MARGIN))
+    });
+
+    stack![
+        video,
+        container(sliding)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::End)
+            .padding(FULLSCREEN_BAR_MARGIN),
+    ]
+    .into()
+}
+
+fn preview<'a>(state: &'a AppState) -> Element<'a, Message> {
+    if let Some(frame) = &state.current_frame {
         container(
             shader(VideoProgram {
                 frame: frame.clone(),
@@ -23,6 +75,11 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .style(theme::video_backdrop)
         .into()
     } else {
+        let style = if state.is_fullscreen {
+            theme::video_backdrop
+        } else {
+            theme::placeholder
+        };
         container(
             column![
                 theme::title("No video loaded"),
@@ -35,27 +92,32 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
-        .style(theme::placeholder)
+        .style(style)
         .into()
-    };
+    }
+}
 
-    // 2. Scrubber
-    let scrubber = slider(
-        0.0..=duration.max(0.001),
+fn scrubber<'a>(state: &'a AppState) -> Element<'a, Message> {
+    slider(
+        0.0..=state.active_duration().max(0.001),
         state.current_timestamp,
         Message::Seek,
     )
     .step(0.01)
     .width(Length::Fill)
     .height(theme::SLIDER_HEIGHT)
-    .style(theme::scrubber);
+    .style(theme::scrubber)
+    .into()
+}
 
-    // 3. Transport Toolbar
+fn transport_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
+    let has_media = state.active_item().is_some();
+
     let timecode = row![
         text(format_time(state.current_timestamp))
             .size(14)
             .color(theme::ON_SURFACE),
-        theme::supporting(format!("/ {}", format_time(duration))),
+        theme::supporting(format!("/ {}", format_time(state.active_duration()))),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -86,7 +148,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         (icons::FULLSCREEN, "Fullscreen")
     };
 
-    let transport_bar = row![
+    row![
         container(timecode).width(Length::FillPortion(1)),
         row![
             step_button(icons::FAST_REWIND, "Back 1 s", -25),
@@ -108,9 +170,12 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .align_x(Alignment::End),
     ]
     .spacing(8)
-    .align_y(Alignment::Center);
+    .align_y(Alignment::Center)
+    .into()
+}
 
-    // 4. Cut Markers
+fn markers_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
+    let has_media = state.active_item().is_some();
     let in_str = state
         .in_point
         .map(format_time)
@@ -135,7 +200,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
 
     let has_points = state.in_point.is_some() || state.out_point.is_some();
 
-    let markers_bar = row![
+    row![
         marker_button("Set In", Message::SetInPoint),
         marker_chip(in_str),
         space().width(Length::Fixed(12.0)),
@@ -148,21 +213,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
             .on_press_maybe(has_points.then_some(Message::ClearPoints)),
     ]
     .spacing(8)
-    .align_y(Alignment::Center);
-
-    container(
-        column![
-            preview_element,
-            scrubber,
-            transport_bar,
-            markers_bar,
-        ]
-        .spacing(12),
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(theme::card)
+    .align_y(Alignment::Center)
     .into()
 }
 

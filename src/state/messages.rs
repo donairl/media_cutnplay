@@ -17,6 +17,12 @@ pub enum Message {
     Seek(f64),
     ToggleFullscreen,
 
+    // Fullscreen pointer tracking (drives the auto-hiding controls)
+    WindowResized(f32),
+    CursorMoved(f32),
+    CursorLeft,
+    PointerPressed(bool),
+
     // Cut Markers
     SetInPoint,
     SetOutPoint,
