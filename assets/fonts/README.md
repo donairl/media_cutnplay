@@ -9,7 +9,7 @@ It only contains the icons used by the app. To add one, append its name to
 `src/ui/icons.rs`:
 
 ```sh
-NAMES="add,check_circle,close,content_cut,delete,error,fast_forward,fast_rewind,folder_open,fullscreen,fullscreen_exit,left_panel_close,left_panel_open,pause,play_arrow,right_panel_close,right_panel_open,skip_next,skip_previous"
+NAMES="add,check_circle,close,content_cut,delete,error,fast_forward,fast_rewind,folder_open,fullscreen,fullscreen_exit,movie_edit,pause,play_arrow,skip_next,skip_previous,video_library"
 URL=$(curl -s "https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0&icon_names=$NAMES" | grep -o 'https://[^)]*')
 curl -s "$URL" -o MaterialSymbolsRounded-subset.ttf
 ```

@@ -1,35 +1,16 @@
 use crate::state::app_state::AppState;
 use crate::state::messages::Message;
 use crate::ui::{icons, theme};
-use iced::widget::{button, column, container, row, scrollable, space, text, tooltip};
+use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
-    if !state.show_queue_panel {
-        return theme::panel_rail(theme::panel_toggle(
-            icons::LEFT_PANEL_OPEN,
-            "Show media queue",
-            tooltip::Position::Right,
-            Message::ToggleQueuePanel,
-        ));
-    }
-
-    let clear_btn = theme::with_tooltip(
-        button(icons::icon(icons::DELETE, 20))
-            .padding(8)
-            .style(theme::icon_button)
-            .on_press_maybe((!state.queue.is_empty()).then_some(Message::ClearQueue)),
-        "Clear queue",
-        tooltip::Position::Bottom,
-    );
+    let clear_btn = button(theme::label("Clear"))
+        .padding(theme::COMPACT_PADDING)
+        .style(theme::text_button)
+        .on_press_maybe((!state.queue.is_empty()).then_some(Message::ClearQueue));
 
     let header = row![
-        theme::panel_toggle(
-            icons::LEFT_PANEL_CLOSE,
-            "Hide media queue",
-            tooltip::Position::Bottom,
-            Message::ToggleQueuePanel,
-        ),
         theme::title("Media Queue"),
         space().width(Length::Fill),
         clear_btn,

@@ -8,8 +8,7 @@ use iced::theme::Palette;
 use crate::ui::icons;
 use iced::widget::{button, container, progress_bar, row, scrollable, slider, text, Row, Text};
 use iced::{
-    border, widget, Alignment, Background, Border, Color, Element, Font, Length, Shadow, Theme,
-    Vector,
+    border, widget, Alignment, Background, Border, Color, Element, Font, Shadow, Theme, Vector,
 };
 
 // ---- Color roles -----------------------------------------------------------
@@ -270,6 +269,21 @@ pub fn text_button(_theme: &Theme, status: button::Status) -> button::Style {
     button_style(None, PRIMARY, None, RADIUS_FULL, status)
 }
 
+/// Toggle icon button: tonal container while selected.
+pub fn icon_toggle(selected: bool, status: button::Status) -> button::Style {
+    if selected {
+        button_style(
+            Some(SECONDARY_CONTAINER),
+            ON_SECONDARY_CONTAINER,
+            None,
+            RADIUS_FULL,
+            status,
+        )
+    } else {
+        button_style(None, ON_SURFACE_VARIANT, None, RADIUS_FULL, status)
+    }
+}
+
 /// Standard icon button.
 pub fn icon_button(_theme: &Theme, status: button::Status) -> button::Style {
     button_style(None, ON_SURFACE_VARIANT, None, RADIUS_FULL, status)
@@ -403,30 +417,4 @@ pub fn with_tooltip<'a, Message: 'a>(
     )
     .gap(4)
     .into()
-}
-
-/// Icon button that collapses or expands a side panel.
-pub fn panel_toggle<'a, Message: Clone + 'a>(
-    glyph: char,
-    hint: &'a str,
-    position: widget::tooltip::Position,
-    message: Message,
-) -> Element<'a, Message> {
-    with_tooltip(
-        button(icons::icon(glyph, 20))
-            .padding(8)
-            .style(icon_button)
-            .on_press(message),
-        hint,
-        position,
-    )
-}
-
-/// What is left of a collapsed side panel: a slim card holding its toggle.
-pub fn panel_rail<'a, Message: 'a>(toggle: Element<'a, Message>) -> Element<'a, Message> {
-    container(toggle)
-        .padding(8)
-        .height(Length::Fill)
-        .style(card)
-        .into()
 }

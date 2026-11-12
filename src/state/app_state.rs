@@ -30,7 +30,7 @@ pub struct AppState {
     pub cursor_y: Option<f32>,
     pub pointer_pressed: bool,
     pub window_height: f32,
-    /// Side panels can be collapsed to a slim rail.
+    /// Side panels, toggled from the action bar.
     pub show_queue_panel: bool,
     pub show_export_panel: bool,
     pub current_timestamp: f64,

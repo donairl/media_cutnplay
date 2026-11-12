@@ -1,30 +1,11 @@
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
 use crate::ui::{icons, theme};
-use iced::widget::{button, column, container, progress_bar, row, space, text, tooltip};
+use iced::widget::{button, column, container, progress_bar, row, space, text};
 use iced::{Alignment, Color, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
-    if !state.show_export_panel {
-        return theme::panel_rail(theme::panel_toggle(
-            icons::RIGHT_PANEL_OPEN,
-            "Show Cut & Export",
-            tooltip::Position::Left,
-            Message::ToggleExportPanel,
-        ));
-    }
-
-    let header = row![
-        theme::title("Cut & Export"),
-        space().width(Length::Fill),
-        theme::panel_toggle(
-            icons::RIGHT_PANEL_CLOSE,
-            "Hide Cut & Export",
-            tooltip::Position::Bottom,
-            Message::ToggleExportPanel,
-        ),
-    ]
-    .align_y(Alignment::Center);
+    let header = theme::title("Cut & Export");
 
     let info_section: Element<'a, Message> = if let Some(item) = state.active_item() {
         let video_codec = item
