@@ -30,11 +30,29 @@ fn test_e2e_cut_and_verify_metadata() {
     assert!(meta.duration_secs >= 3.8 && meta.duration_secs <= 4.2);
 
     // 3. Decode frame at 1.0s
-    let mut dec = media_cutnplay::core::decoder::VideoDecoder::open(&src).unwrap();
-    let frame = dec.seek_and_decode(1.0).unwrap();
+    let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+    let player = media_cutnplay::player::Player::spawn(
+        media_cutnplay::player::AudioBackend::Disabled,
+        move |event| {
+            let _ = frame_tx.send(event);
+        },
+    );
+    player.load(src.clone());
+    player.seek(1.0);
+    let frame = loop {
+        let event = frame_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("player produced no frame");
+        if let media_cutnplay::player::PlayerEvent::FrameReady = event {
+            let frame = player.poll_frame().unwrap();
+            if (frame.pts - 1.0).abs() < 0.001 {
+                break frame;
+            }
+        }
+    };
     assert_eq!(frame.width, 320);
     assert_eq!(frame.height, 240);
-    assert_eq!(frame.rgba_data.len(), 320 * 240 * 4);
+    assert_eq!(frame.rgba.len(), 320 * 240 * 4);
 
     // 4. Perform lossless cut (1.0s to 3.0s)
     let mut reported_progress = false;

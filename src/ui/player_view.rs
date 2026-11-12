@@ -1,19 +1,25 @@
 use crate::state::app_state::AppState;
 use crate::state::messages::Message;
-use iced::widget::{button, column, container, image, row, slider, space, text};
-use iced::{Alignment, Element, Length};
+use crate::ui::video_view::VideoProgram;
+use iced::widget::{button, column, container, row, shader, slider, space, text};
+use iced::{Alignment, Color, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     let duration = state.active_duration();
 
     // 1. Preview Viewport
     let preview_element: Element<'a, Message> = if let Some(frame) = &state.current_frame {
-        container(image(frame.clone()))
+        container(
+            shader(VideoProgram {
+                frame: frame.clone(),
+            })
             .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+            .height(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_theme| container::Style::default().background(Color::BLACK))
+        .into()
     } else {
         container(
             column![

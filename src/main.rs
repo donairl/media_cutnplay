@@ -1,11 +1,12 @@
 use iced::futures::SinkExt;
-use iced::widget::image;
 use iced::{window, Element, Subscription, Task};
 use media_cutnplay::state::app_state::{AppState, ExportStatus};
+use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
 use media_cutnplay::ui::layout;
 use media_cutnplay::worker::actor::run_worker;
 use media_cutnplay::worker::commands::{WorkerCommand, WorkerEvent};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -31,18 +32,17 @@ fn boot() -> (AppState, Task<Message>) {
         run_worker(cmd_rx, event_tx);
     });
 
-    let state = AppState::new(cmd_tx);
+    let (player_tx, mut player_rx) = mpsc::unbounded_channel();
+    let player = Player::spawn(AudioBackend::Device, move |event| {
+        let _ = player_tx.send(event);
+    });
 
-    let event_stream_task = Task::stream(iced::stream::channel(64, async move |mut output| {
+    let state = AppState::new(cmd_tx, player);
+
+    let worker_events = Task::stream(iced::stream::channel(64, async move |mut output| {
         while let Some(event) = event_rx.recv().await {
             let wrapper = match event {
                 WorkerEvent::MetadataLoaded(m) => WorkerEventWrapper::MetadataLoaded(m),
-                WorkerEvent::FrameDecoded(f) => WorkerEventWrapper::FrameDecoded {
-                    timestamp: f.timestamp,
-                    width: f.width,
-                    height: f.height,
-                    rgba: f.rgba_data,
-                },
                 WorkerEvent::CutProgress(p) => WorkerEventWrapper::CutProgress(p),
                 WorkerEvent::CutCompleted(res) => {
                     WorkerEventWrapper::CutCompleted(res.map_err(|e| e.to_string()))
@@ -53,7 +53,24 @@ fn boot() -> (AppState, Task<Message>) {
         }
     }));
 
-    (state, event_stream_task)
+    let player_events = Task::stream(iced::stream::channel(64, async move |mut output| {
+        while let Some(event) = player_rx.recv().await {
+            let _ = output.send(Message::PlayerEvent(event)).await;
+        }
+    }));
+
+    // Files passed on the command line are queued at startup.
+    let cli_files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let open_cli_files = if cli_files.is_empty() {
+        Task::none()
+    } else {
+        Task::done(Message::FilesAdded(cli_files))
+    };
+
+    (
+        state,
+        Task::batch([worker_events, player_events, open_cli_files]),
+    )
 }
 
 fn update(state: &mut AppState, message: Message) -> Task<Message> {
@@ -94,7 +111,7 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
             if was_empty {
                 state.active_index = Some(0);
-                let _ = state.cmd_tx.try_send(WorkerCommand::LoadFile(first_path));
+                open_in_player(state, first_path);
             }
 
             Task::none()
@@ -103,13 +120,9 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         Message::SelectQueueItem(idx) => {
             if idx < state.queue.len() {
                 state.active_index = Some(idx);
-                state.current_timestamp = 0.0;
-                state.in_point = None;
-                state.out_point = None;
-                state.current_frame = None;
                 state.export_status = ExportStatus::Idle;
                 let path = state.queue[idx].file_path.clone();
-                let _ = state.cmd_tx.try_send(WorkerCommand::LoadFile(path));
+                open_in_player(state, path);
             }
             Task::none()
         }
@@ -117,16 +130,16 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         Message::RemoveQueueItem(idx) => {
             if idx < state.queue.len() {
                 state.queue.remove(idx);
-                if state.queue.is_empty() {
-                    state.active_index = None;
-                    state.current_frame = None;
-                    state.current_timestamp = 0.0;
-                } else if let Some(active) = state.active_index {
-                    if active >= state.queue.len() {
-                        state.active_index = Some(state.queue.len() - 1);
-                        let path = state.queue[state.queue.len() - 1].file_path.clone();
-                        let _ = state.cmd_tx.try_send(WorkerCommand::LoadFile(path));
+                match state.active_index {
+                    _ if state.queue.is_empty() => close_player(state),
+                    Some(active) if idx < active => state.active_index = Some(active - 1),
+                    Some(active) if idx == active => {
+                        let new_active = active.min(state.queue.len() - 1);
+                        state.active_index = Some(new_active);
+                        let path = state.queue[new_active].file_path.clone();
+                        open_in_player(state, path);
                     }
+                    _ => {}
                 }
             }
             Task::none()
@@ -134,18 +147,30 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
         Message::ClearQueue => {
             state.queue.clear();
-            state.active_index = None;
-            state.current_frame = None;
-            state.current_timestamp = 0.0;
-            state.in_point = None;
-            state.out_point = None;
+            close_player(state);
             state.export_status = ExportStatus::Idle;
             Task::none()
         }
 
         Message::TogglePlay => {
             if state.active_item().is_some() {
-                state.is_playing = !state.is_playing;
+                if state.is_playing {
+                    state.player.pause();
+                    state.is_playing = false;
+                    // Park on the frame that is actually on screen.
+                    if let Some(frame) = &state.current_frame {
+                        state.current_timestamp = frame.pts;
+                    }
+                } else {
+                    // Restart from the beginning when sitting at the end.
+                    let dur = state.active_duration();
+                    if state.player.has_ended() || (dur > 0.0 && state.current_timestamp >= dur - 0.05) {
+                        state.current_timestamp = 0.0;
+                        state.player.seek(0.0);
+                    }
+                    state.player.play();
+                    state.is_playing = true;
+                }
             }
             Task::none()
         }
@@ -160,14 +185,31 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 let delta = steps as f64 / fps;
                 let new_sec = (state.current_timestamp + delta).clamp(0.0, state.active_duration());
                 state.current_timestamp = new_sec;
-                let _ = state.cmd_tx.try_send(WorkerCommand::Seek(new_sec));
+                state.player.seek(new_sec);
             }
             Task::none()
         }
 
         Message::Seek(sec) => {
             state.current_timestamp = sec.clamp(0.0, state.active_duration());
-            let _ = state.cmd_tx.try_send(WorkerCommand::Seek(state.current_timestamp));
+            state.player.seek(state.current_timestamp);
+            Task::none()
+        }
+
+        Message::PlayerEvent(event) => {
+            match event {
+                PlayerEvent::FrameReady => present(state),
+                PlayerEvent::Ended => {
+                    present(state);
+                    state.is_playing = false;
+                }
+                PlayerEvent::Error(err) => eprintln!("Player error: {err}"),
+            }
+            Task::none()
+        }
+
+        Message::FrameTick => {
+            present(state);
             Task::none()
         }
 
@@ -271,16 +313,6 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         }
                     }
                 }
-                WorkerEventWrapper::FrameDecoded {
-                    timestamp,
-                    width,
-                    height,
-                    rgba,
-                } => {
-                    state.current_timestamp = timestamp;
-                    let handle = image::Handle::from_rgba(width, height, rgba);
-                    state.current_frame = Some(handle);
-                }
                 WorkerEventWrapper::CutProgress(prog) => {
                     if let ExportStatus::Processing { output_path, .. } = &state.export_status {
                         state.export_status = ExportStatus::Processing {
@@ -308,33 +340,49 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             state.refresh_memory();
             Task::none()
         }
-
-        Message::TickPlayback => {
-            if state.is_playing {
-                let dur = state.active_duration();
-                let next_sec = state.current_timestamp + 0.04;
-                if next_sec >= dur {
-                    state.current_timestamp = dur;
-                    state.is_playing = false;
-                } else {
-                    state.current_timestamp = next_sec;
-                }
-                let _ = state.cmd_tx.try_send(WorkerCommand::Seek(state.current_timestamp));
-            }
-            Task::none()
-        }
     }
 }
 
+/// Puts the frame that is due on screen and syncs the timecode to the clock.
+fn present(state: &mut AppState) {
+    if let Some(frame) = state.player.poll_frame() {
+        state.current_frame = Some(frame);
+    }
+    if state.is_playing {
+        let dur = state.active_duration();
+        let pos = state.player.position();
+        state.current_timestamp = if dur > 0.0 { pos.min(dur) } else { pos };
+    }
+}
+
+fn reset_transport(state: &mut AppState) {
+    state.is_playing = false;
+    state.current_timestamp = 0.0;
+    state.in_point = None;
+    state.out_point = None;
+    state.current_frame = None;
+}
+
+fn open_in_player(state: &mut AppState, path: PathBuf) {
+    reset_transport(state);
+    state.player.load(path);
+}
+
+fn close_player(state: &mut AppState) {
+    reset_transport(state);
+    state.active_index = None;
+    state.player.close();
+}
+
 fn subscription(state: &AppState) -> Subscription<Message> {
-    let telemetry_sub = iced::time::every(Duration::from_secs(1)).map(|_| Message::TickTelemetry);
+    let telemetry = iced::time::every(Duration::from_secs(1)).map(|_| Message::TickTelemetry);
 
     if state.is_playing {
-        let playback_sub =
-            iced::time::every(Duration::from_millis(40)).map(|_| Message::TickPlayback);
-        Subscription::batch([telemetry_sub, playback_sub])
+        // One tick per display refresh; the audio clock decides which frame.
+        let frames = window::frames().map(|_| Message::FrameTick);
+        Subscription::batch([telemetry, frames])
     } else {
-        telemetry_sub
+        telemetry
     }
 }
 

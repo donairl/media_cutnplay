@@ -1,7 +1,8 @@
 use crate::core::metadata::MediaMetadata;
 use crate::worker::commands::WorkerCommand;
-use iced::widget::image;
+use crate::player::{Player, VideoFrame};
 use std::path::PathBuf;
+use std::sync::Arc;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::mpsc::Sender;
 
@@ -15,6 +16,7 @@ pub enum ExportStatus {
 
 pub struct AppState {
     pub cmd_tx: Sender<WorkerCommand>,
+    pub player: Player,
     pub queue: Vec<MediaMetadata>,
     pub active_index: Option<usize>,
 
@@ -23,7 +25,7 @@ pub struct AppState {
     pub current_timestamp: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
-    pub current_frame: Option<image::Handle>,
+    pub current_frame: Option<Arc<VideoFrame>>,
 
     pub target_output_path: Option<PathBuf>,
     pub export_status: ExportStatus,
@@ -35,7 +37,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(cmd_tx: Sender<WorkerCommand>) -> Self {
+    pub fn new(cmd_tx: Sender<WorkerCommand>, player: Player) -> Self {
         let mut sys = System::new();
         let pid = Pid::from_u32(std::process::id());
         sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
@@ -43,6 +45,7 @@ impl AppState {
 
         Self {
             cmd_tx,
+            player,
             queue: Vec::new(),
             active_index: None,
             is_playing: false,

@@ -30,27 +30,17 @@ async fn test_worker_actor_lifecycle() {
         .await
         .unwrap();
 
+    // The worker only probes; playback frames come from the player engine.
     let mut loaded_meta = false;
-    let mut decoded_frame = false;
-
-    // Collect initial events from loading file
     while let Some(event) = event_rx.recv().await {
-        match event {
-            media_cutnplay::worker::commands::WorkerEvent::MetadataLoaded(meta) => {
-                assert_eq!(meta.video.unwrap().width, 160);
-                loaded_meta = true;
-            }
-            media_cutnplay::worker::commands::WorkerEvent::FrameDecoded(frame) => {
-                assert_eq!(frame.width, 160);
-                decoded_frame = true;
-                break;
-            }
-            _ => {}
+        if let media_cutnplay::worker::commands::WorkerEvent::MetadataLoaded(meta) = event {
+            assert_eq!(meta.video.unwrap().width, 160);
+            loaded_meta = true;
+            break;
         }
     }
 
     assert!(loaded_meta, "Metadata was not loaded");
-    assert!(decoded_frame, "Initial frame was not decoded");
 
     let _ = std::fs::remove_file(video_path);
 }

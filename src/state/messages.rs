@@ -1,4 +1,5 @@
 use crate::core::metadata::MediaMetadata;
+use crate::player::PlayerEvent;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -29,20 +30,18 @@ pub enum Message {
     // Worker Event Dispatch
     WorkerEventReceived(WorkerEventWrapper),
 
-    // System Telemetry & Playback Ticks
+    // Playback engine
+    PlayerEvent(PlayerEvent),
+    /// Display refresh while playing: present whichever frame is due.
+    FrameTick,
+
+    // System Telemetry
     TickTelemetry,
-    TickPlayback,
 }
 
 #[derive(Debug, Clone)]
 pub enum WorkerEventWrapper {
     MetadataLoaded(MediaMetadata),
-    FrameDecoded {
-        timestamp: f64,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
     CutProgress(f32),
     CutCompleted(Result<PathBuf, String>),
     Error(String),

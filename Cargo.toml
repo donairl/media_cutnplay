@@ -5,10 +5,11 @@ edition = "2021"
 
 [dependencies]
 iced = { version = "0.14", features = ["image", "tokio"] }
-ffmpeg-next = { version = "9.0.0", features = ["codec", "format", "filter", "software-scaling"] }
+ffmpeg-next = { version = "9.0.0", features = ["codec", "format", "filter", "software-scaling", "software-resampling"] }
 tokio = { version = "1", features = ["full"] }
 sysinfo = "0.33"
 rfd = "0.15"
+cpal = "0.18.2"
 
 [dev-dependencies]
 tempfile = "3"
