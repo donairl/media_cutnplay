@@ -205,6 +205,9 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     present(state);
                     state.is_playing = false;
                 }
+                PlayerEvent::Decoder(label) => {
+                    state.detected_hw = format!("Decode: {label}");
+                }
                 PlayerEvent::Error(err) => eprintln!("Player error: {err}"),
             }
             Task::none()
@@ -386,6 +389,9 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
     }
 }
 
+/// Status-bar text while no video is being decoded.
+const DECODER_IDLE: &str = "Decode: idle";
+
 /// Puts the frame that is due on screen and syncs the timecode to the clock.
 fn present(state: &mut AppState) {
     if let Some(frame) = state.player.poll_frame() {
@@ -445,6 +451,7 @@ fn reset_transport(state: &mut AppState) {
     state.in_point = None;
     state.out_point = None;
     state.current_frame = None;
+    state.detected_hw = DECODER_IDLE.to_string();
 }
 
 fn open_in_player(state: &mut AppState, path: PathBuf) {

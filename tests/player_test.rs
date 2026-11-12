@@ -38,7 +38,7 @@ fn wait_frame_ready(rx: &Receiver<PlayerEvent>) {
         match rx.recv_timeout(Duration::from_secs(5)).expect("no FrameReady") {
             PlayerEvent::FrameReady => return,
             PlayerEvent::Error(err) => panic!("player error: {err}"),
-            PlayerEvent::Ended => {}
+            PlayerEvent::Ended | PlayerEvent::Decoder(_) => {}
         }
     }
 }

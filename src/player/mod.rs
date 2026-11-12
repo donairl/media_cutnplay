@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod engine;
+pub mod hwaccel;
 pub mod timeline;
 
 pub use audio::AudioBackend;

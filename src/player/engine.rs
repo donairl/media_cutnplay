@@ -1,5 +1,6 @@
 use crate::core::error::MediaError;
 use crate::player::audio::{AudioBackend, AudioOutput};
+use crate::player::hwaccel;
 use crate::player::timeline::{DeviceFormat, Timeline};
 use ffmpeg_next::format::context::Input;
 use ffmpeg_next::format::{sample, Pixel, Sample};
@@ -55,6 +56,8 @@ pub enum PlayerEvent {
     FrameReady,
     /// Playback reached the end of the media.
     Ended,
+    /// What is decoding the video ("NVDEC (CUDA)", "VAAPI", "Software").
+    Decoder(&'static str),
     Error(String),
 }
 
@@ -277,6 +280,10 @@ struct VideoTrack {
     awaiting_first: bool,
     last_pts: f64,
     next_id: u64,
+    /// Hardware backend the decoder was opened with, if any.
+    hw: Option<hwaccel::HwKind>,
+    /// Decoder label last sent to the UI.
+    reported: Option<&'static str>,
 }
 
 struct AudioTrack {
@@ -305,16 +312,10 @@ impl Media {
             .streams()
             .best(ffmpeg_next::media::Type::Video)
             .and_then(|stream| {
-                let mut ctx =
-                    ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())
-                        .ok()?;
-                // libavcodec defaults to one thread; let it use every core.
-                ctx.set_threading(ffmpeg_next::codec::threading::Config::kind(
-                    ffmpeg_next::codec::threading::Type::Frame,
-                ));
+                let (decoder, hw) = open_video_decoder(&stream)?;
                 Some(VideoTrack {
                     index: stream.index(),
-                    decoder: ctx.decoder().video().ok()?,
+                    decoder,
                     scaler: None,
                     time_base: f64::from(stream.time_base()),
                     decoded: RawVideoFrame::empty(),
@@ -324,6 +325,8 @@ impl Media {
                     awaiting_first: true,
                     last_pts: 0.0,
                     next_id: 0,
+                    hw,
+                    reported: None,
                 })
             });
 
@@ -422,6 +425,34 @@ impl Media {
     }
 }
 
+/// Opens the video decoder on the best available backend:
+/// NVDEC (CUDA), then VAAPI, then plain software.
+fn open_video_decoder(
+    stream: &ffmpeg_next::format::stream::Stream,
+) -> Option<(ffmpeg_next::decoder::Video, Option<hwaccel::HwKind>)> {
+    let new_context = || {
+        let mut ctx =
+            ffmpeg_next::codec::context::Context::from_parameters(stream.parameters()).ok()?;
+        // libavcodec defaults to one thread; let it use every core. Only
+        // matters in software, including a mid-negotiation fallback to it.
+        ctx.set_threading(ffmpeg_next::codec::threading::Config::kind(
+            ffmpeg_next::codec::threading::Type::Frame,
+        ));
+        Some(ctx)
+    };
+
+    for kind in hwaccel::candidates() {
+        let Some(mut ctx) = new_context() else { continue };
+        let Some(codec) = hwaccel::attach(&mut ctx, kind) else { continue };
+        if let Ok(decoder) = ctx.decoder().open_as(codec).and_then(|d| d.video()) {
+            return Some((decoder, Some(kind)));
+        }
+    }
+
+    let decoder = new_context()?.decoder().video().ok()?;
+    Some((decoder, None))
+}
+
 impl VideoTrack {
     fn drain(&mut self, shared: &Shared, notify: &impl Fn(PlayerEvent)) {
         while self.decoder.receive_frame(&mut self.decoded).is_ok() {
@@ -446,7 +477,20 @@ impl VideoTrack {
 
     /// Converts `self.decoded` to RGBA and queues it for display.
     fn emit(&mut self, shared: &Shared, notify: &impl Fn(PlayerEvent)) {
+        let on_gpu = hwaccel::is_hw_frame(&self.decoded);
         let Some(frame) = self.convert() else { return };
+
+        // The backend is only certain once a frame comes out: the decoder may
+        // have been opened for hardware and still settled on software.
+        let label = match self.hw {
+            Some(kind) if on_gpu => kind.label(),
+            _ => "Software",
+        };
+        if self.reported != Some(label) {
+            self.reported = Some(label);
+            notify(PlayerEvent::Decoder(label));
+        }
+
         let immediate = self.awaiting_first;
         self.awaiting_first = false;
 
@@ -461,7 +505,14 @@ impl VideoTrack {
     }
 
     fn convert(&mut self) -> Option<VideoFrame> {
-        let src = &self.decoded;
+        // Hardware surfaces come back to system memory before conversion.
+        let downloaded;
+        let src = if hwaccel::is_hw_frame(&self.decoded) {
+            downloaded = hwaccel::download(&self.decoded)?;
+            &downloaded
+        } else {
+            &self.decoded
+        };
         let (format, width, height) = (src.format(), src.width(), src.height());
         if width == 0 || height == 0 {
             return None;

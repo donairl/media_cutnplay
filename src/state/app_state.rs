@@ -76,7 +76,7 @@ impl AppState {
             target_output_path: None,
             export_status: ExportStatus::Idle,
             ram_usage_mb: ram_mb,
-            detected_hw: "Native libavcodec 63".to_string(),
+            detected_hw: "Decode: idle".to_string(),
             system_monitor: sys,
             current_pid: pid,
         }
