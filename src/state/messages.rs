@@ -23,6 +23,10 @@ pub enum Message {
     CursorLeft,
     PointerPressed(bool),
 
+    // Side panels
+    ToggleQueuePanel,
+    ToggleExportPanel,
+
     // Cut Markers
     SetInPoint,
     SetOutPoint,

@@ -24,8 +24,12 @@ pub const FAST_REWIND: char = '\u{e020}';
 pub const FOLDER_OPEN: char = '\u{e2c8}';
 pub const FULLSCREEN: char = '\u{e5d0}';
 pub const FULLSCREEN_EXIT: char = '\u{e5d1}';
+pub const LEFT_PANEL_CLOSE: char = '\u{f717}';
+pub const LEFT_PANEL_OPEN: char = '\u{f716}';
 pub const PAUSE: char = '\u{e034}';
 pub const PLAY_ARROW: char = '\u{e037}';
+pub const RIGHT_PANEL_CLOSE: char = '\u{f705}';
+pub const RIGHT_PANEL_OPEN: char = '\u{f704}';
 pub const SKIP_NEXT: char = '\u{e044}';
 pub const SKIP_PREVIOUS: char = '\u{e045}';
 

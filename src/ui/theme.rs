@@ -7,7 +7,10 @@ use iced::font::Weight;
 use iced::theme::Palette;
 use crate::ui::icons;
 use iced::widget::{button, container, progress_bar, row, scrollable, slider, text, Row, Text};
-use iced::{border, Alignment, Background, Border, Color, Font, Shadow, Theme, Vector};
+use iced::{
+    border, widget, Alignment, Background, Border, Color, Element, Font, Length, Shadow, Theme,
+    Vector,
+};
 
 // ---- Color roles -----------------------------------------------------------
 
@@ -381,4 +384,49 @@ pub fn scroll(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
         horizontal_rail: rail,
         ..scrollable::default(theme, status)
     }
+}
+
+// ---- Shared pieces ---------------------------------------------------------
+
+/// Wraps an icon-only control with a plain tooltip naming its action.
+pub fn with_tooltip<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    hint: &'a str,
+    position: widget::tooltip::Position,
+) -> Element<'a, Message> {
+    widget::tooltip(
+        content,
+        container(text(hint).size(12))
+            .padding([4.0, 8.0])
+            .style(tooltip),
+        position,
+    )
+    .gap(4)
+    .into()
+}
+
+/// Icon button that collapses or expands a side panel.
+pub fn panel_toggle<'a, Message: Clone + 'a>(
+    glyph: char,
+    hint: &'a str,
+    position: widget::tooltip::Position,
+    message: Message,
+) -> Element<'a, Message> {
+    with_tooltip(
+        button(icons::icon(glyph, 20))
+            .padding(8)
+            .style(icon_button)
+            .on_press(message),
+        hint,
+        position,
+    )
+}
+
+/// What is left of a collapsed side panel: a slim card holding its toggle.
+pub fn panel_rail<'a, Message: 'a>(toggle: Element<'a, Message>) -> Element<'a, Message> {
+    container(toggle)
+        .padding(8)
+        .height(Length::Fill)
+        .style(card)
+        .into()
 }

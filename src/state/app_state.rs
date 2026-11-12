@@ -30,6 +30,9 @@ pub struct AppState {
     pub cursor_y: Option<f32>,
     pub pointer_pressed: bool,
     pub window_height: f32,
+    /// Side panels can be collapsed to a slim rail.
+    pub show_queue_panel: bool,
+    pub show_export_panel: bool,
     pub current_timestamp: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
@@ -64,6 +67,8 @@ impl AppState {
             cursor_y: None,
             pointer_pressed: false,
             window_height: 720.0,
+            show_queue_panel: true,
+            show_export_panel: true,
             current_timestamp: 0.0,
             in_point: None,
             out_point: None,

@@ -217,20 +217,11 @@ fn markers_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
     .into()
 }
 
-/// Wraps an icon-only control with a plain tooltip naming its action.
 fn with_tooltip<'a>(
     content: impl Into<Element<'a, Message>>,
     hint: &'a str,
 ) -> Element<'a, Message> {
-    tooltip(
-        content,
-        container(text(hint).size(12))
-            .padding([4.0, 8.0])
-            .style(theme::tooltip),
-        tooltip::Position::Top,
-    )
-    .gap(4)
-    .into()
+    theme::with_tooltip(content, hint, tooltip::Position::Top)
 }
 
 fn format_time(sec: f64) -> String {

@@ -258,6 +258,16 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::ToggleQueuePanel => {
+            state.show_queue_panel = !state.show_queue_panel;
+            Task::none()
+        }
+
+        Message::ToggleExportPanel => {
+            state.show_export_panel = !state.show_export_panel;
+            Task::none()
+        }
+
         Message::SetInPoint => {
             state.in_point = Some(state.current_timestamp);
             Task::none()
