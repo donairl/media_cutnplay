@@ -5,7 +5,7 @@ use crate::ui::video_view::VideoProgram;
 use iced::widget::{
     button, column, container, float, row, shader, slider, space, stack, text, tooltip,
 };
-use iced::{Alignment, Element, Length, Vector};
+use iced::{Alignment, Color, Element, Length, Vector};
 
 /// Distance from the bottom edge that summons the fullscreen controls.
 pub const FULLSCREEN_REVEAL_ZONE: f32 = 6.0;
@@ -17,7 +17,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     container(
         column![
             preview(state),
-            scrubber(state),
+            column![scrubber(state), segment_strip(state)],
             transport_bar(state),
             markers_bar(state),
         ]
@@ -109,6 +109,66 @@ fn scrubber<'a>(state: &'a AppState) -> Element<'a, Message> {
     .height(theme::SLIDER_HEIGHT)
     .style(theme::scrubber)
     .into()
+}
+
+/// Thin map of the cut under the scrubber: committed segments in the
+/// primary color, the in/out pair still being marked in the tertiary one.
+fn segment_strip<'a>(state: &'a AppState) -> Element<'a, Message> {
+    const HEIGHT: f32 = 4.0;
+    // The scrubber handle travels half its width short of each end.
+    const INSET: f32 = 6.0;
+
+    let duration = state.active_duration();
+    let bar = |color: Color| {
+        move |_theme: &iced::Theme| {
+            container::Style::default()
+                .background(color)
+                .border(iced::border::rounded(HEIGHT / 2.0))
+        }
+    };
+    let portion = |secs: f64| ((secs / duration) * 10_000.0).round() as u16;
+
+    let layer = |ranges: Vec<(f64, f64)>, color: Color| -> Element<'a, Message> {
+        let mut cells = row![].width(Length::Fill).height(HEIGHT);
+        let mut cursor = 0.0;
+        for (start, end) in ranges {
+            let (start, end) = (start.clamp(cursor, duration), end.clamp(cursor, duration));
+            let (gap, fill) = (portion(start - cursor), portion(end - start).max(1));
+            if gap > 0 {
+                cells = cells.push(space().width(Length::FillPortion(gap)));
+            }
+            cells = cells.push(
+                container(space())
+                    .width(Length::FillPortion(fill))
+                    .height(HEIGHT)
+                    .style(bar(color)),
+            );
+            cursor = end;
+        }
+        let rest = portion(duration - cursor);
+        if rest > 0 {
+            cells = cells.push(space().width(Length::FillPortion(rest)));
+        }
+        cells.into()
+    };
+
+    let track = container(space())
+        .width(Length::Fill)
+        .height(HEIGHT)
+        .style(bar(theme::SURFACE_CONTAINER_HIGHEST));
+
+    let mut layers = stack![track];
+    if duration > 0.0 {
+        let committed: Vec<_> = state.segments.iter().map(|s| (s.start, s.end)).collect();
+        if !committed.is_empty() {
+            layers = layers.push(layer(committed, theme::PRIMARY));
+        }
+        if let Some(pending) = state.pending_segment() {
+            layers = layers.push(layer(vec![(pending.start, pending.end)], theme::TERTIARY));
+        }
+    }
+
+    container(layers).padding([0.0, INSET]).into()
 }
 
 fn transport_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
@@ -207,6 +267,11 @@ fn markers_bar<'a>(state: &'a AppState) -> Element<'a, Message> {
         space().width(Length::Fixed(12.0)),
         marker_button("Set Out", Message::SetOutPoint),
         marker_chip(out_str),
+        space().width(Length::Fixed(12.0)),
+        button(theme::icon_label(icons::ADD, "Add segment"))
+            .padding([8.0, 16.0])
+            .style(theme::tonal)
+            .on_press_maybe(state.pending_segment().map(|_| Message::AddSegment)),
         space().width(Length::Fill),
         button(theme::label("Clear points"))
             .padding(theme::COMPACT_PADDING)

@@ -3,10 +3,14 @@ use iced::{event, keyboard, mouse, window, Element, Event, Subscription, Task};
 use media_cutnplay::state::app_state::{AppState, ExportStatus};
 use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
-use media_cutnplay::ui::{icons, layout, player_view, theme};
+use media_cutnplay::ui::{icons, layout, player_view, shortcuts, theme};
 use media_cutnplay::worker::actor::run_worker;
 use media_cutnplay::worker::commands::{WorkerCommand, WorkerEvent};
+use media_cutnplay::core::error::MediaError;
+use media_cutnplay::core::transcode::NvencSupport;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -49,6 +53,13 @@ fn boot() -> (AppState, Task<Message>) {
                 WorkerEvent::CutCompleted(res) => {
                     WorkerEventWrapper::CutCompleted(res.map_err(|e| e.to_string()))
                 }
+                WorkerEvent::TranscodeProgress(p) => WorkerEventWrapper::TranscodeProgress(p),
+                WorkerEvent::TranscodeCompleted(res) => {
+                    WorkerEventWrapper::TranscodeCompleted(match res {
+                        Err(MediaError::Cancelled) => None,
+                        other => Some(other.map_err(|e| e.to_string())),
+                    })
+                }
                 WorkerEvent::Error(err) => WorkerEventWrapper::Error(err.to_string()),
             };
             let _ = output.send(Message::WorkerEventReceived(wrapper)).await;
@@ -69,9 +80,21 @@ fn boot() -> (AppState, Task<Message>) {
         Task::done(Message::FilesAdded(cli_files))
     };
 
+    // Opening the GPU encoders takes a moment; ask in the background.
+    let probe_nvenc = Task::perform(
+        async {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(NvencSupport::probe());
+            });
+            rx.await.unwrap_or_default()
+        },
+        Message::NvencProbed,
+    );
+
     (
         state,
-        Task::batch([worker_events, player_events, open_cli_files]),
+        Task::batch([worker_events, player_events, open_cli_files, probe_nvenc]),
     )
 }
 
@@ -193,8 +216,19 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
 
         Message::Seek(sec) => {
-            state.current_timestamp = sec.clamp(0.0, state.active_duration());
-            state.player.seek(state.current_timestamp);
+            if state.active_item().is_some() {
+                state.current_timestamp = sec.clamp(0.0, state.active_duration());
+                state.player.seek(state.current_timestamp);
+            }
+            Task::none()
+        }
+
+        Message::SeekBy(delta) => {
+            if state.active_item().is_some() {
+                state.current_timestamp =
+                    (state.current_timestamp + delta).clamp(0.0, state.active_duration());
+                state.player.seek(state.current_timestamp);
+            }
             Task::none()
         }
 
@@ -268,6 +302,90 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
         Message::ToggleExportPanel => {
             state.show_export_panel = !state.show_export_panel;
+            state.show_transcode_panel &= !state.show_export_panel;
+            Task::none()
+        }
+
+        Message::ToggleTranscodePanel => {
+            state.show_transcode_panel = !state.show_transcode_panel;
+            state.show_export_panel &= !state.show_transcode_panel;
+            Task::none()
+        }
+
+        Message::SetTranscode(settings) => {
+            // A destination picked for one container does not fit another.
+            if settings.container != state.transcode.container {
+                state.transcode_output_path = None;
+            }
+            state.transcode = settings.limited_to(state.nvenc.unwrap_or_default());
+            Task::none()
+        }
+
+        Message::NvencProbed(support) => {
+            state.nvenc = Some(support);
+            state.transcode = state.transcode.limited_to(support);
+            Task::none()
+        }
+
+        Message::SelectTranscodeOutput => {
+            let extension = state.transcode.extension();
+            let initial_name = format!("{}_transcoded.{extension}", active_stem(state));
+            Task::perform(
+                async move {
+                    let file = rfd::AsyncFileDialog::new()
+                        .set_file_name(&initial_name)
+                        .add_filter("Video", &[extension])
+                        .save_file()
+                        .await;
+                    // The container follows the extension, so pin it.
+                    file.map(|h| h.path().with_extension(extension))
+                },
+                Message::TranscodeOutputSelected,
+            )
+        }
+
+        Message::TranscodeOutputSelected(opt_path) => {
+            if let Some(path) = opt_path {
+                state.transcode_output_path = Some(path);
+            }
+            Task::none()
+        }
+
+        Message::StartTranscode => {
+            let busy = matches!(state.transcode_status, ExportStatus::Processing { .. });
+            let input_path = state.active_item().map(|item| item.file_path.clone());
+            if let (Some(input_path), false) = (input_path, busy) {
+                let default_out = input_path.with_file_name(format!(
+                    "{}_transcoded.{}",
+                    active_stem(state),
+                    state.transcode.extension()
+                ));
+                let output_path = state.transcode_output_path.clone().unwrap_or(default_out);
+                if output_path == input_path {
+                    state.transcode_status =
+                        ExportStatus::Failed("The destination is the source file itself".into());
+                    return Task::none();
+                }
+
+                // A fresh flag per job: a late cancel cannot hit the next one.
+                state.transcode_cancel = Arc::new(AtomicBool::new(false));
+                state.transcode_status = ExportStatus::Processing {
+                    progress: 0.0,
+                    output_path: output_path.clone(),
+                };
+
+                let _ = state.cmd_tx.try_send(WorkerCommand::StartTranscode {
+                    input_path,
+                    output_path,
+                    settings: state.transcode,
+                    cancel: state.transcode_cancel.clone(),
+                });
+            }
+            Task::none()
+        }
+
+        Message::CancelTranscode => {
+            state.transcode_cancel.store(true, Ordering::Relaxed);
             Task::none()
         }
 
@@ -335,33 +453,60 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::AddSegment => {
+            state.commit_pending_segment();
+            Task::none()
+        }
+
+        Message::RemoveSegment(idx) => {
+            if idx < state.segments.len() {
+                state.segments.remove(idx);
+            }
+            Task::none()
+        }
+
+        Message::ClearSegments => {
+            state.segments.clear();
+            Task::none()
+        }
+
+        Message::SetMergeSegments(merge) => {
+            state.merge_segments = merge;
+            Task::none()
+        }
+
+        Message::SetCutMode(mode) => {
+            state.cut_mode = mode;
+            Task::none()
+        }
+
         Message::StartLosslessCut => {
-            let active_info = state.active_item().map(|item| (item.file_path.clone(), state.in_point, state.out_point));
-            if let Some((input_path, Some(in_pt), Some(out_pt))) = active_info {
-                if out_pt > in_pt {
-                    let default_out = input_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(format!(
-                            "{}_cut.{}",
-                            input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("media"),
-                            input_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4")
-                        ));
+            let segments = state.export_segments();
+            let input_path = state.active_item().map(|item| item.file_path.clone());
+            if let (Some(input_path), false) = (input_path, segments.is_empty()) {
+                let default_out = input_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(format!(
+                        "{}_cut.{}",
+                        input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("media"),
+                        input_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4")
+                    ));
 
-                    let output_path = state.target_output_path.clone().unwrap_or(default_out);
+                let output_path = state.target_output_path.clone().unwrap_or(default_out);
 
-                    state.export_status = ExportStatus::Processing {
-                        progress: 0.0,
-                        output_path: output_path.clone(),
-                    };
+                state.export_status = ExportStatus::Processing {
+                    progress: 0.0,
+                    output_path: output_path.clone(),
+                };
 
-                    let _ = state.cmd_tx.try_send(WorkerCommand::StartLosslessCut {
-                        input_path,
-                        output_path,
-                        in_point: in_pt,
-                        out_point: out_pt,
-                    });
-                }
+                let _ = state.cmd_tx.try_send(WorkerCommand::StartLosslessCut {
+                    input_path,
+                    output_path,
+                    segments,
+                    merge: state.merge_segments,
+                    mode: state.cut_mode,
+                });
             }
             Task::none()
         }
@@ -388,13 +533,25 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     }
                 }
                 WorkerEventWrapper::CutCompleted(result) => match result {
-                    Ok(path) => {
-                        state.export_status = ExportStatus::Completed { output_path: path };
+                    Ok(outputs) => {
+                        state.export_status = ExportStatus::Completed { outputs };
                     }
                     Err(err) => {
                         state.export_status = ExportStatus::Failed(err);
                     }
                 },
+                WorkerEventWrapper::TranscodeProgress(prog) => {
+                    if let ExportStatus::Processing { progress, .. } = &mut state.transcode_status {
+                        *progress = prog;
+                    }
+                }
+                WorkerEventWrapper::TranscodeCompleted(result) => {
+                    state.transcode_status = match result {
+                        Some(Ok(path)) => ExportStatus::Completed { outputs: vec![path] },
+                        Some(Err(err)) => ExportStatus::Failed(err),
+                        None => ExportStatus::Idle,
+                    };
+                }
                 WorkerEventWrapper::Error(err) => {
                     eprintln!("Worker error: {err}");
                 }
@@ -407,6 +564,15 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
     }
+}
+
+/// File name of the active item without its extension.
+fn active_stem(state: &AppState) -> String {
+    state
+        .active_item()
+        .and_then(|item| item.file_path.file_stem().and_then(|s| s.to_str()))
+        .unwrap_or("media")
+        .to_string()
 }
 
 /// Status-bar text while no video is being decoded.
@@ -470,6 +636,7 @@ fn reset_transport(state: &mut AppState) {
     state.current_timestamp = 0.0;
     state.in_point = None;
     state.out_point = None;
+    state.segments.clear();
     state.current_frame = None;
     state.detected_hw = DECODER_IDLE.to_string();
 }
@@ -489,6 +656,7 @@ fn subscription(state: &AppState) -> Subscription<Message> {
     let mut subs = vec![
         iced::time::every(Duration::from_secs(1)).map(|_| Message::TickTelemetry),
         iced::event::listen_with(window_events),
+        iced::event::listen_with(shortcut_events),
     ];
 
     if state.is_fullscreen {
@@ -506,6 +674,23 @@ fn subscription(state: &AppState) -> Subscription<Message> {
 fn window_events(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
     match event {
         Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size.height)),
+        _ => None,
+    }
+}
+
+/// Global keyboard shortcuts. Presses a widget already consumed are skipped
+/// so focused controls keep their own keys.
+fn shortcut_events(event: Event, status: event::Status, _window: window::Id) -> Option<Message> {
+    match (event, status) {
+        (
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                repeat,
+                ..
+            }),
+            event::Status::Ignored,
+        ) => shortcuts::message_for(&key, modifiers, repeat),
         _ => None,
     }
 }

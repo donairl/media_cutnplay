@@ -7,6 +7,8 @@ pub enum MediaError {
     NoVideoStream,
     SeekFailed(String),
     CutFailed(String),
+    TranscodeFailed(String),
+    Cancelled,
 }
 
 impl fmt::Display for MediaError {
@@ -17,6 +19,8 @@ impl fmt::Display for MediaError {
             Self::NoVideoStream => write!(f, "No video stream found in file"),
             Self::SeekFailed(msg) => write!(f, "Seek failed: {msg}"),
             Self::CutFailed(msg) => write!(f, "Cut failed: {msg}"),
+            Self::TranscodeFailed(msg) => write!(f, "Transcode failed: {msg}"),
+            Self::Cancelled => write!(f, "Cancelled"),
         }
     }
 }

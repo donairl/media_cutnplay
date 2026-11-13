@@ -1,7 +1,10 @@
+use crate::core::cutter::CutMode;
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
 use crate::ui::{icons, theme};
-use iced::widget::{button, column, container, progress_bar, row, space, text};
+use iced::widget::{
+    button, checkbox, column, container, progress_bar, row, scrollable, space, text,
+};
 use iced::{Alignment, Color, Element, Length};
 
 pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
@@ -34,21 +37,50 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         section_card("Source", theme::supporting("No media selected").into())
     };
 
-    let cut_duration = match (state.in_point, state.out_point) {
-        (Some(i), Some(o)) if o > i => format_time(o - i),
-        _ => "--:--:--".into(),
+    let export_segments = state.export_segments();
+    let cut_duration = if export_segments.is_empty() {
+        "--:--:--".into()
+    } else {
+        format_time(export_segments.iter().map(|s| s.duration()).sum())
     };
 
-    let cut_section = section_card(
-        "Cut",
-        column![
-            spec_row("Mode", "Lossless (-c copy)".to_string()),
-            spec_row("Duration", cut_duration),
-            theme::supporting("Aligns to keyframes instantly, without re-encoding quality loss."),
-        ]
-        .spacing(6)
-        .into(),
-    );
+    let mut cut_rows = column![
+        mode_picker(state.cut_mode),
+        theme::supporting(match state.cut_mode {
+            CutMode::Lossless => "Instant stream copy. Each segment starts on a keyframe.",
+            CutMode::Smart => "Frame-accurate. Re-encodes only the frames at the cut points. H.264 only.",
+        }),
+        spec_row("Segments", export_segments.len().to_string()),
+        spec_row("Duration", cut_duration),
+    ]
+    .spacing(6);
+
+    if state.segments.is_empty() {
+        cut_rows = cut_rows.push(theme::supporting(
+            "Mark In and Out, then Add segment to cut several parts.",
+        ));
+    } else {
+        for (index, segment) in state.segments.iter().enumerate() {
+            cut_rows = cut_rows.push(segment_row(index, segment.start, segment.end));
+        }
+        cut_rows = cut_rows.push(
+            row![
+                checkbox(state.merge_segments)
+                    .label("Merge into one file")
+                    .size(16)
+                    .text_size(12)
+                    .on_toggle(Message::SetMergeSegments),
+                space().width(Length::Fill),
+                button(theme::label("Clear"))
+                    .padding(theme::COMPACT_PADDING)
+                    .style(theme::text_button)
+                    .on_press(Message::ClearSegments),
+            ]
+            .align_y(Alignment::Center),
+        );
+    }
+
+    let cut_section = section_card("Cut", cut_rows.into());
 
     let output_str = state
         .target_output_path
@@ -56,11 +88,13 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("Default: <input>_cut.<ext>");
+    let split_output = !state.merge_segments && state.segments.len() > 1;
 
     let output_section = section_card(
         "Destination",
         column![
             theme::supporting(output_str).wrapping(text::Wrapping::WordOrGlyph),
+            split_output.then(|| theme::supporting("One file per segment: _01, _02, ...")),
             button(theme::icon_label(icons::FOLDER_OPEN, "Choose file..."))
                 .padding([8.0, 16.0])
                 .style(theme::outlined)
@@ -72,10 +106,13 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
 
     let action_section: Element<'a, Message> = match &state.export_status {
         ExportStatus::Idle => {
-            let can_cut = state.active_item().is_some()
-                && matches!((state.in_point, state.out_point), (Some(i), Some(o)) if o > i);
+            let can_cut = state.active_item().is_some() && !export_segments.is_empty();
 
-            action_button(icons::CONTENT_CUT, "Start lossless cut", theme::filled)
+            let label = match state.cut_mode {
+                CutMode::Lossless => "Start lossless cut",
+                CutMode::Smart => "Start smart cut",
+            };
+            action_button(icons::CONTENT_CUT, label, theme::filled)
                 .on_press_maybe(can_cut.then_some(Message::StartLosslessCut))
                 .into()
         }
@@ -88,15 +125,19 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         ]
         .spacing(10)
         .into(),
-        ExportStatus::Completed { output_path } => {
-            let filename = output_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("File");
+        ExportStatus::Completed { outputs } => {
+            let summary = match outputs.as_slice() {
+                [single] => single
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("File")
+                    .to_string(),
+                many => format!("{} files", many.len()),
+            };
             column![
                 status_line(
                     icons::CHECK_CIRCLE,
-                    format!("Cut complete: {filename}"),
+                    format!("Cut complete: {summary}"),
                     theme::SUCCESS,
                 ),
                 action_button(icons::CONTENT_CUT, "Cut again", theme::tonal).on_press(Message::StartLosslessCut),
@@ -115,10 +156,10 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     container(
         column![
             header,
-            info_section,
-            cut_section,
-            output_section,
-            space().height(Length::Fill),
+            scrollable(column![info_section, cut_section, output_section].spacing(12))
+                .height(Length::Fill)
+                .spacing(4)
+                .style(theme::scroll),
             action_section,
         ]
         .spacing(12),
@@ -147,6 +188,41 @@ fn spec_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
         text(value).size(12).color(theme::ON_SURFACE),
     ]
     .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Two-way switch between the cut modes.
+fn mode_picker<'a>(current: CutMode) -> Element<'a, Message> {
+    let option = |label: &'a str, mode: CutMode| {
+        let style: fn(&iced::Theme, button::Status) -> button::Style =
+            if mode == current { theme::tonal } else { theme::outlined };
+        button(container(theme::label(label)).center_x(Length::Fill))
+            .width(Length::Fill)
+            .padding(theme::COMPACT_PADDING)
+            .style(style)
+            .on_press(Message::SetCutMode(mode))
+    };
+    row![option("Lossless", CutMode::Lossless), option("Smart", CutMode::Smart)]
+        .spacing(8)
+        .into()
+}
+
+/// One committed segment: click to jump to its start, X to drop it.
+fn segment_row<'a>(index: usize, start: f64, end: f64) -> Element<'a, Message> {
+    let label = format!("{:02}  {} - {}", index + 1, format_time(start), format_time(end));
+    row![
+        button(text(label).size(12))
+            .padding(theme::COMPACT_PADDING)
+            .width(Length::Fill)
+            .style(theme::text_button)
+            .on_press(Message::Seek(start)),
+        button(icons::icon(icons::CLOSE, 16))
+            .padding(6)
+            .style(theme::icon_button)
+            .on_press(Message::RemoveSegment(index)),
+    ]
+    .spacing(4)
     .align_y(Alignment::Center)
     .into()
 }

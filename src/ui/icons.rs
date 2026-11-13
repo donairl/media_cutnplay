@@ -15,6 +15,7 @@ const FONT: Font = Font::with_name("Material Symbols Rounded Filled");
 
 pub const ADD: char = '\u{e145}';
 pub const BRIGHTNESS: char = '\u{e3ab}';
+pub const CANCEL: char = '\u{e5c9}';
 pub const CHECK_CIRCLE: char = '\u{e86c}';
 pub const CLOSE: char = '\u{e5cd}';
 pub const CONTENT_CUT: char = '\u{e14e}';
@@ -33,6 +34,7 @@ pub const PLAY_ARROW: char = '\u{e037}';
 pub const RESTART_ALT: char = '\u{f053}';
 pub const SKIP_NEXT: char = '\u{e044}';
 pub const SKIP_PREVIOUS: char = '\u{e045}';
+pub const TRANSFORM: char = '\u{e428}';
 pub const VIDEO_LIBRARY: char = '\u{e04a}';
 
 /// An icon glyph. Its color is inherited from the surrounding widget

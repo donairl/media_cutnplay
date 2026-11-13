@@ -7,3 +7,5 @@ pub mod status_bar;
 pub mod layout;
 pub mod theme;
 pub mod icons;
+pub mod shortcuts;
+pub mod transcode_view;

@@ -1,9 +1,11 @@
-use crate::core::cutter::lossless_cut;
+use crate::core::cutter::export_segments;
 use crate::core::metadata::probe_file;
+use crate::core::transcode::transcode;
 use crate::worker::commands::{WorkerCommand, WorkerEvent};
 use tokio::sync::mpsc::{Receiver, Sender};
 
-/// Background jobs that are not playback: probing files and exporting cuts.
+/// Background jobs that are not playback: probing files, exporting cuts and
+/// transcoding.
 /// Playback lives in [`crate::player`] so an export never stalls it.
 pub fn run_worker(mut cmd_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent>) {
     while let Some(cmd) = cmd_rx.blocking_recv() {
@@ -18,14 +20,31 @@ pub fn run_worker(mut cmd_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEv
             WorkerCommand::StartLosslessCut {
                 input_path,
                 output_path,
-                in_point,
-                out_point,
+                segments,
+                merge,
+                mode,
             } => {
                 let tx_prog = event_tx.clone();
-                let res = lossless_cut(&input_path, &output_path, in_point, out_point, move |p| {
+                let res = export_segments(&input_path, &output_path, &segments, merge, mode, move |p| {
                     let _ = tx_prog.blocking_send(WorkerEvent::CutProgress(p));
                 });
                 let _ = event_tx.blocking_send(WorkerEvent::CutCompleted(res));
+            }
+            WorkerCommand::StartTranscode {
+                input_path,
+                output_path,
+                settings,
+                cancel,
+            } => {
+                // A transcode can run for hours; keep this loop free.
+                let event_tx = event_tx.clone();
+                std::thread::spawn(move || {
+                    let tx_prog = event_tx.clone();
+                    let res = transcode(&input_path, &output_path, &settings, &cancel, move |p| {
+                        let _ = tx_prog.blocking_send(WorkerEvent::TranscodeProgress(p));
+                    });
+                    let _ = event_tx.blocking_send(WorkerEvent::TranscodeCompleted(res));
+                });
             }
         }
     }

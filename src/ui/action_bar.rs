@@ -32,6 +32,12 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 state.show_export_panel,
                 Message::ToggleExportPanel,
             ),
+            toggle(
+                icons::TRANSFORM,
+                "Transcode",
+                state.show_transcode_panel,
+                Message::ToggleTranscodePanel,
+            ),
             space().height(Length::Fixed(8.0)),
             adjust_toggle(icons::BRIGHTNESS, "Brightness", AdjustKind::Brightness),
             adjust_toggle(icons::CONTRAST, "Contrast", AdjustKind::Contrast),

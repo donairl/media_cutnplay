@@ -1,4 +1,6 @@
+use crate::core::cutter::CutMode;
 use crate::core::metadata::MediaMetadata;
+use crate::core::transcode::{NvencSupport, TranscodeSettings};
 use crate::player::PlayerEvent;
 use crate::state::app_state::AdjustKind;
 use std::path::PathBuf;
@@ -16,6 +18,8 @@ pub enum Message {
     TogglePlay,
     StepFrame(i32),
     Seek(f64),
+    /// Relative seek in seconds (keyboard jumps).
+    SeekBy(f64),
     ToggleFullscreen,
 
     // Fullscreen pointer tracking (drives the auto-hiding controls)
@@ -27,6 +31,7 @@ pub enum Message {
     // Side panels
     ToggleQueuePanel,
     ToggleExportPanel,
+    ToggleTranscodePanel,
 
     // Video settings (preview only)
     ToggleAdjustPanel(AdjustKind),
@@ -38,11 +43,26 @@ pub enum Message {
     SetInPoint,
     SetOutPoint,
     ClearPoints,
+    /// Commit the current in/out pair to the segment list.
+    AddSegment,
+    RemoveSegment(usize),
+    ClearSegments,
+    /// Export all segments joined into one file instead of one file each.
+    SetMergeSegments(bool),
+    SetCutMode(CutMode),
 
     // Export Controls
     SelectOutputPath,
     OutputPathSelected(Option<PathBuf>),
     StartLosslessCut,
+
+    // Transcode
+    SetTranscode(TranscodeSettings),
+    SelectTranscodeOutput,
+    TranscodeOutputSelected(Option<PathBuf>),
+    StartTranscode,
+    CancelTranscode,
+    NvencProbed(NvencSupport),
 
     // Worker Event Dispatch
     WorkerEventReceived(WorkerEventWrapper),
@@ -60,6 +80,9 @@ pub enum Message {
 pub enum WorkerEventWrapper {
     MetadataLoaded(MediaMetadata),
     CutProgress(f32),
-    CutCompleted(Result<PathBuf, String>),
+    CutCompleted(Result<Vec<PathBuf>, String>),
+    TranscodeProgress(f32),
+    /// `None` when the job was cancelled.
+    TranscodeCompleted(Option<Result<PathBuf, String>>),
     Error(String),
 }

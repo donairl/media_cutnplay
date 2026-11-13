@@ -1,7 +1,10 @@
+use crate::core::cutter::{insert_segment, CutMode, Segment};
 use crate::core::metadata::MediaMetadata;
+use crate::core::transcode::{NvencSupport, TranscodeSettings};
 use crate::worker::commands::WorkerCommand;
 use crate::player::{Player, VideoFrame};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -11,7 +14,8 @@ use tokio::sync::mpsc::Sender;
 pub enum ExportStatus {
     Idle,
     Processing { progress: f32, output_path: PathBuf },
-    Completed { output_path: PathBuf },
+    /// The files written, in segment order.
+    Completed { outputs: Vec<PathBuf> },
     Failed(String),
 }
 
@@ -78,16 +82,31 @@ pub struct AppState {
     /// Side panels, toggled from the action bar.
     pub show_queue_panel: bool,
     pub show_export_panel: bool,
+    /// Shares the right-hand side with the export panel: one at a time.
+    pub show_transcode_panel: bool,
     /// Preview picture settings and the flyout currently open for them.
     pub adjust: VideoAdjust,
     pub adjust_panel: Option<AdjustKind>,
     pub current_timestamp: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
+    /// Committed cut segments of the active file: sorted, non-overlapping.
+    pub segments: Vec<Segment>,
+    /// Join the segments into one output file instead of one file each.
+    pub merge_segments: bool,
+    pub cut_mode: CutMode,
     pub current_frame: Option<Arc<VideoFrame>>,
 
     pub target_output_path: Option<PathBuf>,
     pub export_status: ExportStatus,
+
+    pub transcode: TranscodeSettings,
+    pub transcode_output_path: Option<PathBuf>,
+    pub transcode_status: ExportStatus,
+    /// Raised to stop the running transcode.
+    pub transcode_cancel: Arc<AtomicBool>,
+    /// What the GPU can encode; `None` until the startup probe reports.
+    pub nvenc: Option<NvencSupport>,
 
     pub ram_usage_mb: f32,
     pub detected_hw: String,
@@ -117,14 +136,23 @@ impl AppState {
             window_height: 720.0,
             show_queue_panel: true,
             show_export_panel: true,
+            show_transcode_panel: false,
             adjust: VideoAdjust::default(),
             adjust_panel: None,
             current_timestamp: 0.0,
             in_point: None,
             out_point: None,
+            segments: Vec::new(),
+            merge_segments: false,
+            cut_mode: CutMode::default(),
             current_frame: None,
             target_output_path: None,
             export_status: ExportStatus::Idle,
+            transcode: TranscodeSettings::default(),
+            transcode_output_path: None,
+            transcode_status: ExportStatus::Idle,
+            transcode_cancel: Arc::new(AtomicBool::new(false)),
+            nvenc: None,
             ram_usage_mb: ram_mb,
             detected_hw: "Decode: idle".to_string(),
             system_monitor: sys,
@@ -147,6 +175,33 @@ impl AppState {
 
     pub fn active_item(&self) -> Option<&MediaMetadata> {
         self.active_index.and_then(|idx| self.queue.get(idx))
+    }
+
+    /// The in/out pair being marked, when it spans a positive duration.
+    pub fn pending_segment(&self) -> Option<Segment> {
+        match (self.in_point, self.out_point) {
+            (Some(start), Some(end)) if end > start => Some(Segment { start, end }),
+            _ => None,
+        }
+    }
+
+    /// Moves the pending in/out pair into the segment list.
+    pub fn commit_pending_segment(&mut self) {
+        if let Some(segment) = self.pending_segment() {
+            insert_segment(&mut self.segments, segment);
+            self.in_point = None;
+            self.out_point = None;
+        }
+    }
+
+    /// What an export would cut: the segment list, or just the pending
+    /// in/out pair while the list is empty.
+    pub fn export_segments(&self) -> Vec<Segment> {
+        if self.segments.is_empty() {
+            self.pending_segment().into_iter().collect()
+        } else {
+            self.segments.clone()
+        }
     }
 
     pub fn active_duration(&self) -> f64 {

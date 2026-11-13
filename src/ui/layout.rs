@@ -1,6 +1,6 @@
 use crate::state::app_state::AppState;
 use crate::state::messages::Message;
-use crate::ui::{action_bar, controls_view, player_view, queue_view, status_bar, theme};
+use crate::ui::{action_bar, controls_view, player_view, queue_view, status_bar, theme, transcode_view};
 use iced::widget::{column, container, row};
 use iced::{Element, Length};
 
@@ -21,6 +21,9 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         panes = panes.push(player_view::view(state));
         if state.show_export_panel {
             panes = panes.push(controls_view::view(state));
+        }
+        if state.show_transcode_panel {
+            panes = panes.push(transcode_view::view(state));
         }
         let panes = panes
             .spacing(theme::GUTTER)
