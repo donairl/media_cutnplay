@@ -30,7 +30,8 @@ rm -rf "${PKG_DIR}"
 mkdir -p "${PKG_DIR}" "${DIST_DIR}"
 
 # Salin binary (font ikon sudah tertanam di dalamnya, jadi assets/ tidak ikut)
-cp "${REPO_ROOT}/target/release/${APP_NAME}" "${PKG_DIR}/"
+# Honor CARGO_TARGET_DIR (e.g. a build dir off an exFAT drive).
+cp "${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/${APP_NAME}" "${PKG_DIR}/"
 
 # Salin README dan LICENSE jika ada
 for doc in README.md LICENSE; do
