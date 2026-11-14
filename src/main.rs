@@ -1,6 +1,6 @@
 use iced::futures::SinkExt;
 use iced::{event, keyboard, mouse, window, Element, Event, Subscription, Task};
-use media_cutnplay::state::app_state::{AppState, ExportStatus};
+use media_cutnplay::state::app_state::{default_transcode_output, AppState, ExportStatus};
 use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
 use media_cutnplay::ui::{icons, layout, player_view, shortcuts, theme};
@@ -9,8 +9,7 @@ use media_cutnplay::worker::commands::{WorkerCommand, WorkerEvent};
 use media_cutnplay::core::error::MediaError;
 use media_cutnplay::core::transcode::NvencSupport;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -352,35 +351,30 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
 
         Message::StartTranscode => {
-            let busy = matches!(state.transcode_status, ExportStatus::Processing { .. });
-            let input_path = state.active_item().map(|item| item.file_path.clone());
-            if let (Some(input_path), false) = (input_path, busy) {
-                let default_out = input_path.with_file_name(format!(
-                    "{}_transcoded.{}",
-                    active_stem(state),
-                    state.transcode.extension()
-                ));
-                let output_path = state.transcode_output_path.clone().unwrap_or(default_out);
-                if output_path == input_path {
-                    state.transcode_status =
-                        ExportStatus::Failed("The destination is the source file itself".into());
-                    return Task::none();
-                }
-
-                // A fresh flag per job: a late cancel cannot hit the next one.
-                state.transcode_cancel = Arc::new(AtomicBool::new(false));
-                state.transcode_status = ExportStatus::Processing {
-                    progress: 0.0,
-                    output_path: output_path.clone(),
-                };
-
-                let _ = state.cmd_tx.try_send(WorkerCommand::StartTranscode {
-                    input_path,
-                    output_path,
-                    settings: state.transcode,
-                    cancel: state.transcode_cancel.clone(),
+            if let Some(item) = state.active_item() {
+                let input = item.file_path.clone();
+                let output = state.transcode_output_path.clone().unwrap_or_else(|| {
+                    default_transcode_output(&input, state.transcode.extension())
                 });
+                state.start_transcodes(vec![(input, output)]);
             }
+            Task::none()
+        }
+
+        Message::StartTranscodeAll => {
+            // Each file goes next to its source; a chosen destination names one file only.
+            let extension = state.transcode.extension();
+            let jobs = state
+                .queue
+                .iter()
+                .filter(|item| item.video.is_some())
+                .map(|item| {
+                    let input = item.file_path.clone();
+                    let output = default_transcode_output(&input, extension);
+                    (input, output)
+                })
+                .collect();
+            state.start_transcodes(jobs);
             Task::none()
         }
 
@@ -545,13 +539,7 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         *progress = prog;
                     }
                 }
-                WorkerEventWrapper::TranscodeCompleted(result) => {
-                    state.transcode_status = match result {
-                        Some(Ok(path)) => ExportStatus::Completed { outputs: vec![path] },
-                        Some(Err(err)) => ExportStatus::Failed(err),
-                        None => ExportStatus::Idle,
-                    };
-                }
+                WorkerEventWrapper::TranscodeCompleted(result) => state.finish_transcode(result),
                 WorkerEventWrapper::Error(err) => {
                     eprintln!("Worker error: {err}");
                 }

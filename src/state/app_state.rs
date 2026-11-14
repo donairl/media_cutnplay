@@ -3,7 +3,8 @@ use crate::core::metadata::MediaMetadata;
 use crate::core::transcode::{NvencSupport, TranscodeSettings};
 use crate::worker::commands::WorkerCommand;
 use crate::player::{Player, VideoFrame};
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
@@ -103,8 +104,14 @@ pub struct AppState {
     pub transcode: TranscodeSettings,
     pub transcode_output_path: Option<PathBuf>,
     pub transcode_status: ExportStatus,
-    /// Raised to stop the running transcode.
+    /// Raised to stop the running transcode (and the rest of its run).
     pub transcode_cancel: Arc<AtomicBool>,
+    /// (input, output) jobs of the current run still waiting to start.
+    pub transcode_pending: VecDeque<(PathBuf, PathBuf)>,
+    /// Number of jobs in the current run (1 for a single file).
+    pub transcode_total: usize,
+    pub transcode_outputs: Vec<PathBuf>,
+    pub transcode_errors: Vec<String>,
     /// What the GPU can encode; `None` until the startup probe reports.
     pub nvenc: Option<NvencSupport>,
 
@@ -152,6 +159,10 @@ impl AppState {
             transcode_output_path: None,
             transcode_status: ExportStatus::Idle,
             transcode_cancel: Arc::new(AtomicBool::new(false)),
+            transcode_pending: VecDeque::new(),
+            transcode_total: 0,
+            transcode_outputs: Vec::new(),
+            transcode_errors: Vec::new(),
             nvenc: None,
             ram_usage_mb: ram_mb,
             detected_hw: "Decode: idle".to_string(),
@@ -206,5 +217,155 @@ impl AppState {
 
     pub fn active_duration(&self) -> f64 {
         self.active_item().map(|m| m.duration_secs).unwrap_or(0.0)
+    }
+
+    /// 1-based position of the running job within its run.
+    pub fn transcode_job_number(&self) -> usize {
+        self.transcode_total - self.transcode_pending.len()
+    }
+
+    /// Starts a run of transcodes, one after another, with the current
+    /// settings. Ignored while another run is busy.
+    pub fn start_transcodes(&mut self, jobs: Vec<(PathBuf, PathBuf)>) {
+        let busy = matches!(self.transcode_status, ExportStatus::Processing { .. });
+        if busy || jobs.is_empty() {
+            return;
+        }
+        self.transcode_total = jobs.len();
+        self.transcode_pending = jobs.into();
+        self.transcode_outputs.clear();
+        self.transcode_errors.clear();
+        self.start_next_transcode();
+    }
+
+    /// Records the running job's result (`None`: cancelled, which ends the
+    /// whole run) and moves on to the next one.
+    pub fn finish_transcode(&mut self, result: Option<Result<PathBuf, String>>) {
+        let ExportStatus::Processing { output_path, .. } = &self.transcode_status else {
+            return;
+        };
+        match result {
+            Some(Ok(path)) => self.transcode_outputs.push(path),
+            Some(Err(err)) => {
+                let name = output_path.file_name().unwrap_or_default().to_string_lossy();
+                self.transcode_errors.push(if self.transcode_total > 1 {
+                    format!("{name}: {err}")
+                } else {
+                    err
+                });
+            }
+            None => {
+                self.transcode_pending.clear();
+                self.transcode_status = ExportStatus::Idle;
+                return;
+            }
+        }
+        self.start_next_transcode();
+    }
+
+    /// Hands the next job to the worker, or settles the run's final status.
+    fn start_next_transcode(&mut self) {
+        let Some((input_path, output_path)) = self.transcode_pending.pop_front() else {
+            self.transcode_status = match self.transcode_errors.len() {
+                0 => ExportStatus::Completed { outputs: std::mem::take(&mut self.transcode_outputs) },
+                failed if self.transcode_total > 1 => ExportStatus::Failed(format!(
+                    "{failed} of {} failed. {}",
+                    self.transcode_total,
+                    self.transcode_errors.join("; ")
+                )),
+                _ => ExportStatus::Failed(self.transcode_errors.join("; ")),
+            };
+            return;
+        };
+        if output_path == input_path {
+            self.transcode_errors.push("The destination is the source file itself".into());
+            return self.start_next_transcode();
+        }
+
+        // A fresh flag per job: a late cancel cannot hit the next one.
+        self.transcode_cancel = Arc::new(AtomicBool::new(false));
+        self.transcode_status = ExportStatus::Processing { progress: 0.0, output_path: output_path.clone() };
+        let _ = self.cmd_tx.try_send(WorkerCommand::StartTranscode {
+            input_path,
+            output_path,
+            settings: self.transcode,
+            cancel: self.transcode_cancel.clone(),
+        });
+    }
+}
+
+/// Where a transcode writes when no destination was chosen:
+/// `<input>_transcoded.<ext>` next to the input.
+pub fn default_transcode_output(input: &Path, extension: &str) -> PathBuf {
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("media");
+    input.with_file_name(format!("{stem}_transcoded.{extension}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::AudioBackend;
+    use tokio::sync::mpsc::{channel, Receiver};
+
+    fn state() -> (AppState, Receiver<WorkerCommand>) {
+        let (tx, rx) = channel(16);
+        (AppState::new(tx, Player::spawn(AudioBackend::Disabled, |_| {})), rx)
+    }
+
+    fn started(rx: &mut Receiver<WorkerCommand>) -> Option<PathBuf> {
+        match rx.try_recv().ok()? {
+            WorkerCommand::StartTranscode { input_path, .. } => Some(input_path),
+            _ => None,
+        }
+    }
+
+    fn job(name: &str) -> (PathBuf, PathBuf) {
+        (name.into(), default_transcode_output(Path::new(name), "mp4"))
+    }
+
+    #[test]
+    fn run_goes_through_every_job_and_reports_failures() {
+        let (mut s, mut rx) = state();
+        let same = PathBuf::from("b.mp4");
+        s.start_transcodes(vec![job("a.mkv"), (same.clone(), same), job("c.mkv")]);
+        assert_eq!(started(&mut rx), Some("a.mkv".into()));
+        assert_eq!(s.transcode_job_number(), 1);
+
+        // A second run cannot start while this one is busy.
+        s.start_transcodes(vec![job("x.mkv")]);
+        assert_eq!(started(&mut rx), None);
+
+        // b would overwrite its own source: skipped with an error, c runs.
+        s.finish_transcode(Some(Ok("a_transcoded.mp4".into())));
+        assert_eq!(started(&mut rx), Some("c.mkv".into()));
+        assert_eq!(s.transcode_job_number(), 3);
+
+        s.finish_transcode(Some(Err("boom".into())));
+        assert_eq!(started(&mut rx), None);
+        let ExportStatus::Failed(err) = &s.transcode_status else { panic!("{:?}", s.transcode_status) };
+        assert!(err.starts_with("2 of 3 failed.") && err.contains("c_transcoded.mp4: boom"), "{err}");
+    }
+
+    #[test]
+    fn cancel_stops_the_whole_run() {
+        let (mut s, mut rx) = state();
+        s.start_transcodes(vec![job("a.mkv"), job("b.mkv")]);
+        assert!(started(&mut rx).is_some());
+        s.finish_transcode(None);
+        assert_eq!(started(&mut rx), None);
+        assert_eq!(s.transcode_status, ExportStatus::Idle);
+        assert!(s.transcode_pending.is_empty());
+    }
+
+    #[test]
+    fn single_job_completes_with_its_output() {
+        let (mut s, mut rx) = state();
+        s.start_transcodes(vec![job("/v/a.mkv")]);
+        assert!(started(&mut rx).is_some());
+        s.finish_transcode(Some(Ok("/v/a_transcoded.mp4".into())));
+        assert_eq!(
+            s.transcode_status,
+            ExportStatus::Completed { outputs: vec!["/v/a_transcoded.mp4".into()] }
+        );
     }
 }

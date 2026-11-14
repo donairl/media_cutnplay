@@ -61,6 +61,8 @@ pub enum Message {
     SelectTranscodeOutput,
     TranscodeOutputSelected(Option<PathBuf>),
     StartTranscode,
+    /// Transcode every video in the queue, one after another.
+    StartTranscodeAll,
     CancelTranscode,
     NvencProbed(NvencSupport),
 

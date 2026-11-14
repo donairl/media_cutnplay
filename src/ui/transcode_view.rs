@@ -163,6 +163,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .into(),
     );
 
+    let queued_videos = state.queue.iter().filter(|item| item.video.is_some()).count();
     let default_name = format!("Default: <input>_transcoded.{}", settings.extension());
     let output_name = state
         .transcode_output_path
@@ -181,37 +182,67 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 .style(theme::outlined)
                 .on_press_maybe((!busy).then_some(Message::SelectTranscodeOutput)),
         ]
+        .push((queued_videos > 1).then(|| {
+            theme::supporting("Transcode all saves each file next to its source.")
+        }))
         .spacing(10)
         .into(),
     );
 
     let has_video = state.active_item().is_some_and(|item| item.video.is_some());
-    let start = |label: &'a str, style| {
-        action_button(icons::TRANSFORM, label, style)
-            .on_press_maybe(has_video.then_some(Message::StartTranscode))
+    // Primary action, plus "all" once there is more than one video to do.
+    let start = |label: &'a str, style| -> Element<'a, Message> {
+        let one = action_button(icons::TRANSFORM, label, style)
+            .on_press_maybe(has_video.then_some(Message::StartTranscode));
+        if queued_videos > 1 {
+            let all = action_button(icons::TRANSFORM, "Transcode all", theme::outlined)
+                .on_press(Message::StartTranscodeAll);
+            column![one, all, theme::supporting(format!("All {queued_videos} videos in the queue."))]
+                .spacing(8)
+                .into()
+        } else {
+            one.into()
+        }
     };
+    let batch = state.transcode_total > 1;
 
     let action_section: Element<'a, Message> = match &state.transcode_status {
-        ExportStatus::Idle => start("Start transcode", theme::filled).into(),
-        ExportStatus::Processing { progress, .. } => column![
-            theme::body(format!("Transcoding... {:.0}%", progress * 100.0)),
-            progress_bar(0.0..=1.0, *progress)
-                .length(Length::Fill)
-                .girth(theme::PROGRESS_GIRTH)
-                .style(theme::progress),
-            action_button(icons::CANCEL, "Cancel", theme::outlined)
-                .on_press(Message::CancelTranscode),
-        ]
-        .spacing(10)
-        .into(),
-        ExportStatus::Completed { outputs } => {
-            let name = outputs
-                .first()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("File");
+        ExportStatus::Idle => start("Start transcode", theme::filled),
+        ExportStatus::Processing { progress, output_path } => {
+            let label = if batch {
+                format!(
+                    "Transcoding {}/{}... {:.0}%",
+                    state.transcode_job_number(),
+                    state.transcode_total,
+                    progress * 100.0
+                )
+            } else {
+                format!("Transcoding... {:.0}%", progress * 100.0)
+            };
             column![
-                status_line(icons::CHECK_CIRCLE, format!("Transcode complete: {name}"), theme::SUCCESS),
+                theme::body(label),
+                progress_bar(0.0..=1.0, *progress)
+                    .length(Length::Fill)
+                    .girth(theme::PROGRESS_GIRTH)
+                    .style(theme::progress),
+            ]
+            .push(batch.then(|| {
+                theme::supporting(file_name(output_path).to_string()).wrapping(text::Wrapping::WordOrGlyph)
+            }))
+            .push(
+                action_button(icons::CANCEL, if batch { "Cancel all" } else { "Cancel" }, theme::outlined)
+                    .on_press(Message::CancelTranscode),
+            )
+            .spacing(10)
+            .into()
+        }
+        ExportStatus::Completed { outputs } => {
+            let message = match outputs.as_slice() {
+                [one] => format!("Transcode complete: {}", file_name(one)),
+                many => format!("Transcoded {} files", many.len()),
+            };
+            column![
+                status_line(icons::CHECK_CIRCLE, message, theme::SUCCESS),
                 start("Transcode again", theme::tonal),
             ]
             .spacing(10)
@@ -241,6 +272,10 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     .height(Length::Fill)
     .style(theme::card)
     .into()
+}
+
+fn file_name(path: &std::path::Path) -> &str {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or("File")
 }
 
 /// What the active file would come out as, e.g. "1920x1080 -> 1280x720".
