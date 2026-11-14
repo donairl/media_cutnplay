@@ -196,11 +196,32 @@ sudo dnf install \
     alsa-lib-devel
 ```
 
+#### Windows (untested):
+No source changes are needed: audio goes through WASAPI, file dialogs are native, and NVDEC/NVENC (CUDA) work on NVIDIA GPUs. VAAPI does not exist on Windows, so without an NVIDIA GPU video decodes in software.
+
+1. Install Rust with `rustup` using the `x86_64-pc-windows-msvc` toolchain, plus Visual Studio Build Tools with the **"Desktop development with C++"** workload.
+2. Install LLVM/Clang (needed by `ffmpeg-sys-next` to read the FFmpeg headers):
+   ```powershell
+   winget install LLVM.LLVM
+   setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
+   ```
+3. Download a **shared** FFmpeg 9 build that has `include/`, `lib/` and `bin/` folders, e.g. `ffmpeg-n9.x-...-win64-gpl-shared` from BtbN FFmpeg-Builds or `full_build-shared` from gyan.dev. Extract it to e.g. `C:\ffmpeg`, then:
+   ```powershell
+   setx FFMPEG_DIR "C:\ffmpeg"
+   ```
+4. Open a new terminal so the variables are picked up, then build:
+   ```powershell
+   cargo build --release
+   ```
+5. Copy every `.dll` from `C:\ffmpeg\bin` next to `target\release\media_cutnplay.exe`, or add `C:\ffmpeg\bin` to `PATH`. To share the app, zip the `.exe` together with those DLLs.
+
+`release.sh` is a Linux bash script and does not run on Windows.
+
 ### Building from Source
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/media_cutnplay.git
+   git clone https://github.com/donairl/media_cutnplay.git
    cd media_cutnplay
    ```
 
@@ -238,6 +259,20 @@ This generates:
 - `dist/media_cutnplay-v0.1.0-linux-<arch>.tar.gz`
 - `dist/media_cutnplay-v0.1.0-linux-<arch>.tar.gz.sha256`
 - Embedded `.desktop` entry file for application launchers.
+
+If the repository lives on a drive without hard-link support (exFAT, FAT32), rustc's incremental cache can get corrupted and the compiler panics. Build on a native filesystem instead; `release.sh` honors this:
+```bash
+export CARGO_TARGET_DIR=$HOME/.cache/cargo-target
+```
+
+### Publishing a Release (GitHub Actions)
+
+Pushing a tag that matches the `Cargo.toml` version builds the Linux tarball in an Arch Linux container (FFmpeg 9) and attaches it to a GitHub Release:
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+The binary links against the system's FFmpeg 9 libraries, so it runs on distributions that ship FFmpeg 9 (Arch, CachyOS, recent Fedora), not on Ubuntu 24.04 / Debian (FFmpeg 6).
 
 ---
 
