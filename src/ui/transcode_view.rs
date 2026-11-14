@@ -1,6 +1,6 @@
 use crate::core::transcode::{
     AudioMode, Container, EncoderBackend, QualityPreset, RateMode, Resolution, TranscodeSettings,
-    VideoCodec, BITRATE_RANGE, BITRATE_STEP, SATURATION_RANGE,
+    VideoCodec, AAC_BITRATES, BITRATE_RANGE, BITRATE_STEP, SATURATION_RANGE,
 };
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
@@ -144,6 +144,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                     ("Copy", settings.audio == AudioMode::Copy, with(|s| s.audio = AudioMode::Copy)),
                 ],
             ),
+            aac_bitrate_row(settings, busy),
             option_row(
                 "Container",
                 vec![
@@ -368,6 +369,26 @@ fn saturation_slider<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a,
     ]
     .spacing(4)
     .into()
+}
+
+/// AAC bitrate choices, shown only while audio is re-encoded.
+fn aac_bitrate_row<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a, Message> {
+    if settings.audio != AudioMode::Aac {
+        return column![].into();
+    }
+    let labels = ["96k", "128k", "160k", "192k", "256k"];
+    option_row(
+        "AAC bitrate (per stereo pair)",
+        AAC_BITRATES
+            .into_iter()
+            .zip(labels)
+            .map(|(aac_kbps, label)| {
+                let message = (!busy)
+                    .then_some(Message::SetTranscode(TranscodeSettings { aac_kbps, ..settings }));
+                (label, settings.aac_kbps == aac_kbps, message)
+            })
+            .collect(),
+    )
 }
 
 /// A titled card grouping related settings.

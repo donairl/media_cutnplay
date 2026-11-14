@@ -147,6 +147,8 @@ pub const BITRATE_RANGE: std::ops::RangeInclusive<u32> = 250..=40_000;
 pub const BITRATE_STEP: u32 = 250;
 /// Allowed colour saturation, in percent of the source's; 100 leaves it alone.
 pub const SATURATION_RANGE: std::ops::RangeInclusive<u8> = 0..=200;
+/// AAC bitrates offered, in kbit/s per stereo pair.
+pub const AAC_BITRATES: [u16; 5] = [96, 128, 160, 192, 256];
 /// Maximum distance between keyframes in transcoded video.
 const KEYFRAME_INTERVAL_SECS: f64 = 5.0;
 /// Output height cap. Video is only ever scaled down, keeping its shape.
@@ -185,6 +187,8 @@ pub struct TranscodeSettings {
     /// Colour saturation in percent: 0 is greyscale, 100 the source, 200 double.
     pub saturation: u8,
     pub audio: AudioMode,
+    /// AAC bitrate in kbit/s for a stereo pair; surround scales with channel count.
+    pub aac_kbps: u16,
     pub container: Container,
 }
 
@@ -199,6 +203,7 @@ impl Default for TranscodeSettings {
             resolution: Resolution::Source,
             saturation: 100,
             audio: AudioMode::Aac,
+            aac_kbps: 160,
             container: Container::Mp4,
         }
     }
@@ -391,7 +396,7 @@ where
         let pipe = if src_idx == main_video {
             Some(Pipe::Video(VideoPipe::new(&istream, &mut octx, settings)?))
         } else if medium == media::Type::Audio && settings.audio == AudioMode::Aac {
-            Some(Pipe::Audio(AudioPipe::new(&istream, &mut octx)?))
+            Some(Pipe::Audio(AudioPipe::new(&istream, &mut octx, settings.aac_kbps)?))
         } else if medium == media::Type::Audio
             || (medium == media::Type::Subtitle && keep_subtitles)
         {
@@ -642,6 +647,13 @@ impl VideoPipe {
     }
 }
 
+/// AAC bits per second: `kbps` per stereo pair, so mono and stereo get
+/// `kbps` and 5.1 three times it.
+fn aac_bit_rate(kbps: u16, channels: i32) -> usize {
+    let pairs = (channels.max(2) as usize).div_ceil(2);
+    usize::from(kbps) * 1000 * pairs
+}
+
 /// decode -> resample into AAC-sized frames -> encode
 struct AudioPipe {
     out_idx: usize,
@@ -655,6 +667,7 @@ impl AudioPipe {
     fn new(
         istream: &format::stream::Stream,
         octx: &mut format::context::Output,
+        kbps: u16,
     ) -> Result<Self, MediaError> {
         let decoder = codec::context::Context::from_parameters(istream.parameters())?
             .decoder()
@@ -692,7 +705,7 @@ impl AudioPipe {
         encoder.set_rate(rate as i32);
         encoder.set_channel_layout(out_layout);
         encoder.set_format(sample_format);
-        encoder.set_bit_rate(if out_layout.channels() > 2 { 384_000 } else { 160_000 });
+        encoder.set_bit_rate(aac_bit_rate(kbps, out_layout.channels()));
         encoder.set_time_base(time_base);
         if global_header {
             encoder.set_flags(codec::Flags::GLOBAL_HEADER);
@@ -902,6 +915,14 @@ mod tests {
         assert_eq!(vp9.encoder_options().get("crf"), Some("31"));
         // Constant quality on VP9 needs the bitrate zeroed.
         assert_eq!(vp9.encoder_options().get("b"), Some("0"));
+    }
+
+    #[test]
+    fn aac_bit_rate_scales_per_stereo_pair() {
+        assert_eq!(aac_bit_rate(128, 1), 128_000);
+        assert_eq!(aac_bit_rate(128, 2), 128_000);
+        assert_eq!(aac_bit_rate(128, 6), 384_000);
+        assert_eq!(aac_bit_rate(160, 8), 640_000);
     }
 
     #[test]
