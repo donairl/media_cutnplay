@@ -41,6 +41,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
             space().height(Length::Fixed(8.0)),
             adjust_toggle(icons::BRIGHTNESS, "Brightness", AdjustKind::Brightness),
             adjust_toggle(icons::CONTRAST, "Contrast", AdjustKind::Contrast),
+            adjust_toggle(icons::PALETTE, "Saturation", AdjustKind::Saturation),
             toggle(
                 icons::FILTER_B_AND_W,
                 "Monochrome",
@@ -61,6 +62,7 @@ pub fn adjust_panel<'a>(state: &'a AppState, kind: AdjustKind) -> Element<'a, Me
     let (glyph, hint) = match kind {
         AdjustKind::Brightness => (icons::BRIGHTNESS, "Reset brightness"),
         AdjustKind::Contrast => (icons::CONTRAST, "Reset contrast"),
+        AdjustKind::Saturation => (icons::PALETTE, "Reset saturation"),
     };
     let value = state.adjust.get(kind);
     let percent = (value * 100.0).round() as i32;

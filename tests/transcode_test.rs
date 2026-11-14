@@ -333,3 +333,41 @@ fn test_transcode_output_has_regular_keyframes() {
         }
     }
 }
+
+/// Average saturation (0..1) over the file, from ffmpeg's signalstats.
+fn mean_saturation(path: &Path) -> f64 {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v", "error", "-f", "lavfi",
+            &format!("movie={},signalstats", path.to_str().unwrap()),
+            "-show_entries", "frame_tags=lavfi.signalstats.SATAVG", "-of", "csv=p=0",
+        ])
+        .output()
+        .unwrap();
+    let values: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+    assert!(!values.is_empty(), "no signalstats output");
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+#[test]
+fn test_transcode_saturation_zero_is_greyscale() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mkv");
+    let normal = dir.path().join("normal.mp4");
+    let grey = dir.path().join("grey.mp4");
+    make_clip(&src);
+    ffmpeg_next::init().unwrap();
+
+    let settings = TranscodeSettings { resolution: Resolution::P480, ..TranscodeSettings::default() };
+    transcode(&src, &normal, &settings, &AtomicBool::new(false), |_| {}).unwrap();
+    let greyscale = TranscodeSettings { saturation: 0, ..settings };
+    transcode(&src, &grey, &greyscale, &AtomicBool::new(false), |_| {}).unwrap();
+
+    assert_decodes_cleanly(&grey);
+    let (colour, mono) = (mean_saturation(&normal), mean_saturation(&grey));
+    assert!(colour > 20.0, "source should be colourful, got {colour}");
+    assert!(mono < 2.0, "saturation 0 should be greyscale, got {mono}");
+}

@@ -29,6 +29,7 @@ pub const FOLDER_OPEN: char = '\u{e2c8}';
 pub const FULLSCREEN: char = '\u{e5d0}';
 pub const FULLSCREEN_EXIT: char = '\u{e5d1}';
 pub const MOVIE_EDIT: char = '\u{f840}';
+pub const PALETTE: char = '\u{e40a}';
 pub const PAUSE: char = '\u{e034}';
 pub const PLAY_ARROW: char = '\u{e037}';
 pub const RESTART_ALT: char = '\u{f053}';

@@ -64,7 +64,8 @@ struct Uniforms {
     contrast: f32,
     monochrome: f32,
     linear_sampling: f32,
-    _pad: vec2<f32>,
+    saturation: f32,
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -116,6 +117,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if u.monochrome > 0.5 {
         color = vec3<f32>(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)));
     }
+    let luma = vec3<f32>(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    color = mix(luma, color, 1.0 + u.saturation);
     color = (color - 0.5) * (1.0 + u.contrast) + 0.5 + u.brightness * 0.5;
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     if encoded {
@@ -351,6 +354,7 @@ impl shader::Primitive for VideoPrimitive {
             self.adjust.contrast,
             flag(self.adjust.monochrome),
             flag(pipeline.linear_sampling),
+            self.adjust.saturation,
         ];
         let mut bytes = [0u8; UNIFORM_SIZE];
         for (chunk, value) in bytes.chunks_exact_mut(4).zip(fields) {

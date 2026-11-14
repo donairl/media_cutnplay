@@ -1,6 +1,6 @@
 use crate::core::transcode::{
     AudioMode, Container, EncoderBackend, QualityPreset, RateMode, Resolution, TranscodeSettings,
-    VideoCodec, BITRATE_RANGE, BITRATE_STEP,
+    VideoCodec, BITRATE_RANGE, BITRATE_STEP, SATURATION_RANGE,
 };
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
@@ -128,6 +128,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 ],
             ),
         )
+        .push(saturation_slider(settings, busy))
         .push(theme::supporting(output_summary(state)))
         .spacing(10)
         .into(),
@@ -335,6 +336,35 @@ fn rate_slider<'a>(settings: TranscodeSettings) -> Element<'a, Message> {
         text(value).size(12).color(theme::ON_SURFACE),
         control,
         theme::supporting(hint),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// Colour saturation, 0% (greyscale) to 200%.
+fn saturation_slider<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a, Message> {
+    let reset = button(text("Reset").size(12))
+        .padding([2.0, 8.0])
+        .style(theme::outlined)
+        .on_press_maybe((!busy && settings.saturation != 100).then_some(Message::SetTranscode(
+            TranscodeSettings { saturation: 100, ..settings },
+        )));
+    column![
+        row![
+            text(format!("Saturation {}%", settings.saturation))
+                .size(12)
+                .color(theme::ON_SURFACE)
+                .width(Length::Fill),
+            reset,
+        ]
+        .align_y(Alignment::Center),
+        slider(SATURATION_RANGE, settings.saturation, move |saturation| {
+            Message::SetTranscode(TranscodeSettings { saturation, ..settings })
+        })
+        .step(5u8)
+        .height(theme::SLIDER_HEIGHT)
+        .style(theme::scrubber),
+        theme::supporting("0% is black and white; 100% keeps the source colours."),
     ]
     .spacing(4)
     .into()

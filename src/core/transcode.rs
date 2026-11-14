@@ -145,6 +145,8 @@ pub enum RateMode {
 /// Allowed target video bitrates, in kbit/s.
 pub const BITRATE_RANGE: std::ops::RangeInclusive<u32> = 250..=40_000;
 pub const BITRATE_STEP: u32 = 250;
+/// Allowed colour saturation, in percent of the source's; 100 leaves it alone.
+pub const SATURATION_RANGE: std::ops::RangeInclusive<u8> = 0..=200;
 /// Maximum distance between keyframes in transcoded video.
 const KEYFRAME_INTERVAL_SECS: f64 = 5.0;
 /// Output height cap. Video is only ever scaled down, keeping its shape.
@@ -180,6 +182,8 @@ pub struct TranscodeSettings {
     /// Target video bitrate in kbit/s, used in [`RateMode::Bitrate`].
     pub bitrate_kbps: u32,
     pub resolution: Resolution,
+    /// Colour saturation in percent: 0 is greyscale, 100 the source, 200 double.
+    pub saturation: u8,
     pub audio: AudioMode,
     pub container: Container,
 }
@@ -193,6 +197,7 @@ impl Default for TranscodeSettings {
             crf: 23,
             bitrate_kbps: 5_000,
             resolution: Resolution::Source,
+            saturation: 100,
             audio: AudioMode::Aac,
             container: Container::Mp4,
         }
@@ -244,6 +249,17 @@ impl TranscodeSettings {
             self.backend = EncoderBackend::Software;
         }
         self
+    }
+
+    /// The filter chain turning a decoded frame into a `width` x `height`
+    /// 8-bit 4:2:0 one. Saturation uses `hue`, as `eq` needs a GPL FFmpeg.
+    fn video_filter(&self, width: u32, height: u32) -> String {
+        let mut chain = format!("scale={width}:{height}:flags=bicubic,format=yuv420p");
+        let saturation = self.saturation.min(*SATURATION_RANGE.end());
+        if saturation != 100 {
+            chain.push_str(&format!(",hue=s={}", f64::from(saturation) / 100.0));
+        }
+        chain
     }
 
     fn encoder_options(&self) -> Dictionary<'static> {
@@ -480,7 +496,7 @@ fn feed(graph: &mut filter::Graph, frame: Option<&ffmpeg_next::Frame>) -> Result
     Ok(())
 }
 
-/// decode -> scale / convert to 8-bit 4:2:0 -> encode
+/// decode -> scale / convert to 8-bit 4:2:0 / saturation -> encode
 struct VideoPipe {
     out_idx: usize,
     time_base: Rational,
@@ -526,7 +542,7 @@ impl VideoPipe {
         graph
             .output("in", 0)?
             .input("out", 0)?
-            .parse(&format!("scale={width}:{height}:flags=bicubic,format=yuv420p"))?;
+            .parse(&settings.video_filter(width, height))?;
         graph.validate()?;
 
         let name = settings.encoder_name();
@@ -886,6 +902,16 @@ mod tests {
         assert_eq!(vp9.encoder_options().get("crf"), Some("31"));
         // Constant quality on VP9 needs the bitrate zeroed.
         assert_eq!(vp9.encoder_options().get("b"), Some("0"));
+    }
+
+    #[test]
+    fn saturation_only_adds_a_filter_when_changed() {
+        let settings = TranscodeSettings::default();
+        assert_eq!(settings.video_filter(1280, 720), "scale=1280:720:flags=bicubic,format=yuv420p");
+        let vivid = TranscodeSettings { saturation: 150, ..settings };
+        assert!(vivid.video_filter(1280, 720).ends_with(",hue=s=1.5"));
+        let grey = TranscodeSettings { saturation: 0, ..settings };
+        assert!(grey.video_filter(1280, 720).ends_with(",hue=s=0"));
     }
 
     #[test]

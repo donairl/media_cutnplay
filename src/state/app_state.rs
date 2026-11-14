@@ -28,6 +28,8 @@ pub struct VideoAdjust {
     pub brightness: f32,
     /// -1.0 (flat grey) ..= 1.0 (double contrast); 0.0 leaves it unchanged.
     pub contrast: f32,
+    /// -1.0 (no colour) ..= 1.0 (double saturation); 0.0 leaves it unchanged.
+    pub saturation: f32,
     pub monochrome: bool,
 }
 
@@ -36,6 +38,7 @@ impl Default for VideoAdjust {
         Self {
             brightness: 0.0,
             contrast: 0.0,
+            saturation: 0.0,
             monochrome: false,
         }
     }
@@ -46,6 +49,7 @@ impl VideoAdjust {
         match kind {
             AdjustKind::Brightness => self.brightness,
             AdjustKind::Contrast => self.contrast,
+            AdjustKind::Saturation => self.saturation,
         }
     }
 
@@ -54,6 +58,7 @@ impl VideoAdjust {
         match kind {
             AdjustKind::Brightness => self.brightness = value,
             AdjustKind::Contrast => self.contrast = value,
+            AdjustKind::Saturation => self.saturation = value,
         }
     }
 }
@@ -63,6 +68,7 @@ impl VideoAdjust {
 pub enum AdjustKind {
     Brightness,
     Contrast,
+    Saturation,
 }
 
 pub struct AppState {
