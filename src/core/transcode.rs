@@ -145,6 +145,8 @@ pub enum RateMode {
 /// Allowed target video bitrates, in kbit/s.
 pub const BITRATE_RANGE: std::ops::RangeInclusive<u32> = 250..=40_000;
 pub const BITRATE_STEP: u32 = 250;
+/// Maximum distance between keyframes in transcoded video.
+const KEYFRAME_INTERVAL_SECS: f64 = 5.0;
 /// Output height cap. Video is only ever scaled down, keeping its shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
@@ -548,14 +550,21 @@ impl VideoPipe {
         } else {
             0
         };
+        // A real keyframe every ~5s so the output stays seekable. Left alone,
+        // libsvtav1 gets g=-1 and open-GOP "forward" keyframes, which leaves
+        // a single seekable frame for the whole file.
+        let fps_or_default = if fps > 0.0 { fps } else { 30.0 };
+        encoder.set_gop((fps_or_default * KEYFRAME_INTERVAL_SECS).round().max(1.0) as u32);
         encoder.set_aspect_ratio(aspect);
         encoder.set_colorspace(decoder.color_space());
         encoder.set_color_range(decoder.color_range());
         encoder.set_color_primaries(decoder.color_primaries());
         encoder.set_color_transfer_characteristic(decoder.color_transfer_characteristic());
+        let mut flags = codec::Flags::CLOSED_GOP;
         if global_header {
-            encoder.set_flags(codec::Flags::GLOBAL_HEADER);
+            flags |= codec::Flags::GLOBAL_HEADER;
         }
+        encoder.set_flags(flags);
 
         let encoder = encoder
             .open_with(settings.encoder_options())

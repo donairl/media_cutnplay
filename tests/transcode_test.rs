@@ -283,3 +283,53 @@ fn nvenc_probe_matches_real_encodes() {
         assert_eq!(result.is_ok(), support.supports(codec), "{codec:?}: {result:?}");
     }
 }
+
+/// Keyframe timestamps of the first video stream.
+fn keyframe_times(path: &Path) -> Vec<f64> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+            "-show_entries", "frame=pts_time", "-of", "csv=p=0",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let mut keys: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().trim_end_matches(',').parse().ok())
+        .collect();
+    // Frames come out in decode order; B-frames can put a keyframe early.
+    keys.sort_by(f64::total_cmp);
+    keys
+}
+
+/// Every encoder must place keyframes regularly, or the output cannot be
+/// seeked (libsvtav1 used to emit a single keyframe for the whole file).
+#[test]
+fn test_transcode_output_has_regular_keyframes() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("long.mkv");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=duration=12:size=320x240:rate=30",
+            "-c:v", "mpeg4", "-q:v", "5",
+            src.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    ffmpeg_next::init().unwrap();
+
+    for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1, VideoCodec::Vp9] {
+        let settings = TranscodeSettings::default().with_codec(codec);
+        let out = dir.path().join(format!("out_{codec:?}.{}", settings.extension()));
+        transcode(&src, &out, &settings, &AtomicBool::new(false), |_| {}).unwrap();
+
+        let keys = keyframe_times(&out);
+        assert!(keys.len() >= 3, "{codec:?}: keyframes at {keys:?}");
+        for gap in keys.windows(2).map(|w| w[1] - w[0]) {
+            assert!(gap <= 5.01, "{codec:?}: keyframe gap {gap}s in {keys:?}");
+        }
+    }
+}
