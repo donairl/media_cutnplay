@@ -67,6 +67,11 @@ echo "  - Arsip   : ${ARCHIVE}"
 echo "  - Checksum: ${CHECKSUM_FILE}"
 echo ""
 
+# Di CI (GitHub Actions) tag dan upload diurus oleh workflow.
+if [ -n "${CI:-}" ]; then
+    exit 0
+fi
+
 # Tag dan upload butuh remote "origin"
 if ! ORIGIN_URL=$(git remote get-url origin 2>/dev/null); then
     echo "Remote 'origin' belum diatur: tag dan upload GitHub dilewati."

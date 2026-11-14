@@ -1,0 +1,42 @@
+name: Release
+
+# Push a tag matching the Cargo.toml version (e.g. v0.1.0) to publish a release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # Arch ships FFmpeg 9, which ffmpeg-next 9 links against; Ubuntu does not.
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel rust clang pkgconf ffmpeg alsa-lib
+
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${VERSION}"
+            exit 1
+          fi
+
+      - name: Build and package
+        run: ./release.sh
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          body: |
+            Linux release ${{ github.ref_name }} (x86_64), built on Arch Linux.
+            Requires FFmpeg 9 shared libraries and ALSA installed on the system.
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
