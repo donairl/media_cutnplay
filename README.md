@@ -80,7 +80,7 @@ Most desktop media utilities fall into two troublesome camps:
 
 * **Supported Codecs:**
   * **Video:** H.264 (`libx264` / `h264_nvenc`), HEVC/H.265 (`libx265` / `hevc_nvenc`), AV1 (`libsvtav1` / `av1_nvenc`), VP9 (`libvpx-vp9`).
-  * **Audio:** AAC (`aac` encoder) or direct Stream Copy (`copy`).
+  * **Audio:** AAC (`aac` encoder, 96–256k), Opus (`libopus`, 64–192k, resampled to 48 kHz when needed) or direct Stream Copy (`copy`).
 * **Encoder Backends:**
   * **Hardware (NVENC):** NVIDIA GPU accelerated encoding for H.264, HEVC, and AV1.
   * **Software (CPU):** Multithreaded software encoding with codec-tailored presets.

@@ -1,6 +1,6 @@
 use crate::core::transcode::{
     AudioMode, Container, EncoderBackend, QualityPreset, RateMode, Resolution, TranscodeSettings,
-    VideoCodec, AAC_BITRATES, BITRATE_RANGE, BITRATE_STEP, SATURATION_RANGE,
+    VideoCodec, BITRATE_RANGE, BITRATE_STEP, SATURATION_RANGE,
 };
 use crate::state::app_state::{AppState, ExportStatus};
 use crate::state::messages::Message;
@@ -140,11 +140,12 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
             option_row(
                 "Audio",
                 vec![
-                    ("AAC", settings.audio == AudioMode::Aac, with(|s| s.audio = AudioMode::Aac)),
-                    ("Copy", settings.audio == AudioMode::Copy, with(|s| s.audio = AudioMode::Copy)),
+                    ("AAC", settings.audio == AudioMode::Aac, with(|s| *s = s.with_audio(AudioMode::Aac))),
+                    ("Opus", settings.audio == AudioMode::Opus, with(|s| *s = s.with_audio(AudioMode::Opus))),
+                    ("Copy", settings.audio == AudioMode::Copy, with(|s| *s = s.with_audio(AudioMode::Copy))),
                 ],
             ),
-            aac_bitrate_row(settings, busy),
+            audio_bitrate_row(settings, busy),
             option_row(
                 "Container",
                 vec![
@@ -371,21 +372,24 @@ fn saturation_slider<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a,
     .into()
 }
 
-/// AAC bitrate choices, shown only while audio is re-encoded.
-fn aac_bitrate_row<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a, Message> {
-    if settings.audio != AudioMode::Aac {
-        return column![].into();
-    }
-    let labels = ["96k", "128k", "160k", "192k", "256k"];
+/// Bitrate choices for the chosen audio codec, shown only while audio is
+/// re-encoded.
+fn audio_bitrate_row<'a>(settings: TranscodeSettings, busy: bool) -> Element<'a, Message> {
+    let title = match settings.audio {
+        AudioMode::Aac => "AAC bitrate (per stereo pair)",
+        AudioMode::Opus => "Opus bitrate (per stereo pair)",
+        AudioMode::Copy => return column![].into(),
+    };
     option_row(
-        "AAC bitrate (per stereo pair)",
-        AAC_BITRATES
-            .into_iter()
-            .zip(labels)
-            .map(|(aac_kbps, label)| {
+        title,
+        settings
+            .audio
+            .bitrates()
+            .iter()
+            .map(|&audio_kbps| {
                 let message = (!busy)
-                    .then_some(Message::SetTranscode(TranscodeSettings { aac_kbps, ..settings }));
-                (label, settings.aac_kbps == aac_kbps, message)
+                    .then_some(Message::SetTranscode(TranscodeSettings { audio_kbps, ..settings }));
+                (format!("{audio_kbps}k"), settings.audio_kbps == audio_kbps, message)
             })
             .collect(),
     )
@@ -402,9 +406,9 @@ fn section_card<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a
 
 /// A label over a row of mutually exclusive choices; the selected one is
 /// filled. A choice without a message is disabled.
-fn option_row<'a>(
+fn option_row<'a, L: text::IntoFragment<'a>>(
     label: &'a str,
-    options: Vec<(&'a str, bool, Option<Message>)>,
+    options: Vec<(L, bool, Option<Message>)>,
 ) -> Element<'a, Message> {
     let buttons = options.into_iter().map(|(name, selected, message)| {
         let style: fn(&iced::Theme, button::Status) -> button::Style =

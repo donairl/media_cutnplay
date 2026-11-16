@@ -149,6 +149,9 @@ pub const BITRATE_STEP: u32 = 250;
 pub const SATURATION_RANGE: std::ops::RangeInclusive<u8> = 0..=200;
 /// AAC bitrates offered, in kbit/s per stereo pair.
 pub const AAC_BITRATES: [u16; 5] = [96, 128, 160, 192, 256];
+/// Opus bitrates offered, in kbit/s per stereo pair. Opus needs less than
+/// AAC for the same quality, so the scale sits lower.
+pub const OPUS_BITRATES: [u16; 5] = [64, 96, 128, 160, 192];
 /// Maximum distance between keyframes in transcoded video.
 const KEYFRAME_INTERVAL_SECS: f64 = 5.0;
 /// Output height cap. Video is only ever scaled down, keeping its shape.
@@ -164,8 +167,31 @@ pub enum Resolution {
 pub enum AudioMode {
     /// Re-encode every audio track to AAC.
     Aac,
+    /// Re-encode every audio track to Opus (libopus).
+    Opus,
     /// Keep the audio tracks as they are.
     Copy,
+}
+
+impl AudioMode {
+    /// Bitrates offered for this codec, in kbit/s per stereo pair; empty
+    /// when the audio is copied.
+    pub fn bitrates(self) -> &'static [u16] {
+        match self {
+            AudioMode::Aac => &AAC_BITRATES,
+            AudioMode::Opus => &OPUS_BITRATES,
+            AudioMode::Copy => &[],
+        }
+    }
+
+    /// The bitrate picked when switching to this codec.
+    fn default_kbps(self) -> u16 {
+        match self {
+            AudioMode::Aac => 160,
+            AudioMode::Opus => 128,
+            AudioMode::Copy => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,8 +213,9 @@ pub struct TranscodeSettings {
     /// Colour saturation in percent: 0 is greyscale, 100 the source, 200 double.
     pub saturation: u8,
     pub audio: AudioMode,
-    /// AAC bitrate in kbit/s for a stereo pair; surround scales with channel count.
-    pub aac_kbps: u16,
+    /// Audio bitrate in kbit/s for a stereo pair; surround scales with
+    /// channel count. Ignored when the audio is copied.
+    pub audio_kbps: u16,
     pub container: Container,
 }
 
@@ -203,7 +230,7 @@ impl Default for TranscodeSettings {
             resolution: Resolution::Source,
             saturation: 100,
             audio: AudioMode::Aac,
-            aac_kbps: 160,
+            audio_kbps: 160,
             container: Container::Mp4,
         }
     }
@@ -230,6 +257,16 @@ impl TranscodeSettings {
             // There is no VP9 on NVENC.
             (VideoCodec::Vp9, _) => "libvpx-vp9",
         }
+    }
+
+    /// The same settings with another audio mode. The bitrate is kept when
+    /// the new codec offers it, otherwise reset to that codec's default.
+    pub fn with_audio(mut self, audio: AudioMode) -> Self {
+        if audio != AudioMode::Copy && !audio.bitrates().contains(&self.audio_kbps) {
+            self.audio_kbps = audio.default_kbps();
+        }
+        self.audio = audio;
+        self
     }
 
     /// The same settings for another codec, with the quality level moved
@@ -395,8 +432,13 @@ where
         let medium = istream.parameters().medium();
         let pipe = if src_idx == main_video {
             Some(Pipe::Video(VideoPipe::new(&istream, &mut octx, settings)?))
-        } else if medium == media::Type::Audio && settings.audio == AudioMode::Aac {
-            Some(Pipe::Audio(AudioPipe::new(&istream, &mut octx, settings.aac_kbps)?))
+        } else if medium == media::Type::Audio && settings.audio != AudioMode::Copy {
+            Some(Pipe::Audio(AudioPipe::new(
+                &istream,
+                &mut octx,
+                settings.audio,
+                settings.audio_kbps,
+            )?))
         } else if medium == media::Type::Audio
             || (medium == media::Type::Subtitle && keep_subtitles)
         {
@@ -649,12 +691,28 @@ impl VideoPipe {
 
 /// AAC bits per second: `kbps` per stereo pair, so mono and stereo get
 /// `kbps` and 5.1 three times it.
-fn aac_bit_rate(kbps: u16, channels: i32) -> usize {
+fn audio_bit_rate(kbps: u16, channels: i32) -> usize {
     let pairs = (channels.max(2) as usize).div_ceil(2);
     usize::from(kbps) * 1000 * pairs
 }
 
-/// decode -> resample into AAC-sized frames -> encode
+/// The sample rate to encode at: the source's when the encoder takes it,
+/// else 48 kHz when offered, else the highest offered. `None` means the
+/// encoder accepts any rate.
+fn output_rate(source: i32, supported: Option<Vec<i32>>) -> i32 {
+    match supported {
+        Some(rates) if !rates.is_empty() && !rates.contains(&source) => {
+            if rates.contains(&48_000) {
+                48_000
+            } else {
+                rates.into_iter().max().unwrap_or(source)
+            }
+        }
+        _ => source,
+    }
+}
+
+/// decode -> resample into encoder-sized frames -> encode (AAC or Opus)
 struct AudioPipe {
     out_idx: usize,
     time_base: Rational,
@@ -667,6 +725,7 @@ impl AudioPipe {
     fn new(
         istream: &format::stream::Stream,
         octx: &mut format::context::Output,
+        mode: AudioMode,
         kbps: u16,
     ) -> Result<Self, MediaError> {
         let decoder = codec::context::Context::from_parameters(istream.parameters())?
@@ -682,18 +741,28 @@ impl AudioPipe {
             _ => ChannelLayout::default(i32::from(decoder.channels().max(1))),
         };
 
-        let codec = encoder::find(codec::Id::AAC)
-            .ok_or_else(|| failed("this FFmpeg has no AAC encoder"))?;
+        let (codec, name) = match mode {
+            AudioMode::Aac => (encoder::find(codec::Id::AAC), "AAC"),
+            // FFmpeg's own Opus encoder is experimental; only libopus will do.
+            AudioMode::Opus => (encoder::find_by_name("libopus"), "Opus"),
+            AudioMode::Copy => unreachable!("copied audio has no encoder"),
+        };
+        let codec = codec.ok_or_else(|| failed(format!("this FFmpeg has no {name} encoder")))?;
         let audio_codec = codec.audio()?;
         let out_layout = audio_codec
             .channel_layouts()
             .map(|layouts| layouts.best(in_layout.channels()))
-            .unwrap_or(ChannelLayout::STEREO);
+            .unwrap_or_else(|| match mode {
+                // libopus maps up to 8 channels on its own.
+                AudioMode::Opus => ChannelLayout::default(in_layout.channels().clamp(1, 8)),
+                _ => ChannelLayout::STEREO,
+            });
         let sample_format = audio_codec
             .formats()
             .and_then(|mut formats| formats.next())
-            .ok_or_else(|| failed("the AAC encoder lists no sample format"))?;
-        let time_base = Rational::new(1, rate as i32);
+            .ok_or_else(|| failed(format!("the {name} encoder lists no sample format")))?;
+        let out_rate = output_rate(rate as i32, audio_codec.rates().map(|r| r.collect()));
+        let time_base = Rational::new(1, out_rate);
 
         let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
         let mut ostream = octx.add_stream(codec)?;
@@ -702,17 +771,17 @@ impl AudioPipe {
         let mut encoder = codec::context::Context::new_with_codec(codec)
             .encoder()
             .audio()?;
-        encoder.set_rate(rate as i32);
+        encoder.set_rate(out_rate);
         encoder.set_channel_layout(out_layout);
         encoder.set_format(sample_format);
-        encoder.set_bit_rate(aac_bit_rate(kbps, out_layout.channels()));
+        encoder.set_bit_rate(audio_bit_rate(kbps, out_layout.channels()));
         encoder.set_time_base(time_base);
         if global_header {
             encoder.set_flags(codec::Flags::GLOBAL_HEADER);
         }
         let encoder = encoder
             .open_as(codec)
-            .map_err(|err| failed(format!("could not start the AAC encoder ({err})")))?;
+            .map_err(|err| failed(format!("could not start the {name} encoder ({err})")))?;
         ostream.set_parameters(&encoder);
 
         let in_tb = istream.time_base();
@@ -729,13 +798,13 @@ impl AudioPipe {
         graph.add(&find("abuffersink")?, "out", "")?;
         // Convert to exactly what the encoder was opened with.
         let conversion = format!(
-            "aformat=sample_fmts={}:sample_rates={rate}:channel_layouts=0x{:x}",
+            "aformat=sample_fmts={}:sample_rates={out_rate}:channel_layouts=0x{:x}",
             sample_format.name(),
             out_layout.bits(),
         );
         graph.output("in", 0)?.input("out", 0)?.parse(&conversion)?;
         graph.validate()?;
-        // AAC takes fixed-size frames; have the sink cut them to measure.
+        // AAC and Opus take fixed-size frames; have the sink cut them to measure.
         if encoder.frame_size() > 0 {
             if let Some(mut out) = graph.get("out") {
                 out.sink().set_frame_size(encoder.frame_size());
@@ -918,11 +987,33 @@ mod tests {
     }
 
     #[test]
-    fn aac_bit_rate_scales_per_stereo_pair() {
-        assert_eq!(aac_bit_rate(128, 1), 128_000);
-        assert_eq!(aac_bit_rate(128, 2), 128_000);
-        assert_eq!(aac_bit_rate(128, 6), 384_000);
-        assert_eq!(aac_bit_rate(160, 8), 640_000);
+    fn audio_bit_rate_scales_per_stereo_pair() {
+        assert_eq!(audio_bit_rate(128, 1), 128_000);
+        assert_eq!(audio_bit_rate(128, 2), 128_000);
+        assert_eq!(audio_bit_rate(128, 6), 384_000);
+        assert_eq!(audio_bit_rate(160, 8), 640_000);
+    }
+
+    #[test]
+    fn output_rate_falls_back_to_48k() {
+        let opus = Some(vec![48_000, 24_000, 16_000, 12_000, 8_000]);
+        assert_eq!(output_rate(44_100, opus.clone()), 48_000);
+        assert_eq!(output_rate(24_000, opus), 24_000);
+        assert_eq!(output_rate(44_100, None), 44_100);
+        assert_eq!(output_rate(96_000, Some(vec![22_050, 44_100])), 44_100);
+    }
+
+    #[test]
+    fn switching_audio_codec_snaps_the_bitrate() {
+        let aac = TranscodeSettings::default();
+        let opus = aac.with_audio(AudioMode::Opus);
+        assert!(OPUS_BITRATES.contains(&opus.audio_kbps));
+        assert_eq!(opus.audio_kbps, 160, "160k exists for both, so it is kept");
+        let aac_256 = TranscodeSettings { audio_kbps: 256, ..aac };
+        assert_eq!(aac_256.with_audio(AudioMode::Opus).audio_kbps, 128);
+        let opus_64 = TranscodeSettings { audio_kbps: 64, ..opus };
+        assert_eq!(opus_64.with_audio(AudioMode::Aac).audio_kbps, 160);
+        assert_eq!(opus_64.with_audio(AudioMode::Copy).audio_kbps, 64);
     }
 
     #[test]

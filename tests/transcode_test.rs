@@ -80,6 +80,33 @@ fn test_transcode_to_h264_aac_mp4_scaled() {
 }
 
 #[test]
+fn test_transcode_audio_to_opus_in_mp4_and_mkv() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mkv");
+    // The lavfi sine source is 44.1 kHz, which Opus cannot take: the
+    // transcoder must resample to 48 kHz.
+    make_clip(&src);
+    ffmpeg_next::init().unwrap();
+
+    for container in [Container::Mp4, Container::Mkv] {
+        let settings = TranscodeSettings {
+            resolution: Resolution::P480,
+            container,
+            ..TranscodeSettings::default().with_audio(AudioMode::Opus)
+        };
+        let out = dir.path().join(format!("clip_opus.{}", settings.extension()));
+        transcode(&src, &out, &settings, &AtomicBool::new(false), |_| {}).unwrap();
+
+        assert_decodes_cleanly(&out);
+        let meta = probe_file(&out).unwrap();
+        let audio = meta.audio.unwrap();
+        assert_eq!(audio.codec, "opus", "{container:?}");
+        assert_eq!(audio.sample_rate, 48_000, "{container:?}");
+        assert!((meta.duration_secs - 3.0).abs() < 0.15, "{container:?} duration {}", meta.duration_secs);
+    }
+}
+
+#[test]
 fn test_transcode_to_hevc_mkv_with_audio_copy() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("clip.mkv");
