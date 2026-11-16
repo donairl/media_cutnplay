@@ -4,7 +4,7 @@ use crate::core::transcode::{NvencSupport, TranscodeSettings};
 use crate::worker::commands::WorkerCommand;
 use crate::player::{Player, VideoFrame};
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
@@ -300,13 +300,6 @@ impl AppState {
     }
 }
 
-/// Where a transcode writes when no destination was chosen:
-/// `<input>_transcoded.<ext>` next to the input.
-pub fn default_transcode_output(input: &Path, extension: &str) -> PathBuf {
-    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("media");
-    input.with_file_name(format!("{stem}_transcoded.{extension}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,7 +319,8 @@ mod tests {
     }
 
     fn job(name: &str) -> (PathBuf, PathBuf) {
-        (name.into(), default_transcode_output(Path::new(name), "mp4"))
+        let stem = name.split('.').next().unwrap_or(name);
+        (name.into(), PathBuf::from(format!("{stem}_transcoded.mp4")))
     }
 
     #[test]

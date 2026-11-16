@@ -1,6 +1,6 @@
 use iced::futures::SinkExt;
 use iced::{event, keyboard, mouse, window, Element, Event, Subscription, Task};
-use media_cutnplay::state::app_state::{default_transcode_output, AppState, ExportStatus};
+use media_cutnplay::state::app_state::{AppState, ExportStatus};
 use media_cutnplay::player::{AudioBackend, Player, PlayerEvent};
 use media_cutnplay::state::messages::{Message, WorkerEventWrapper};
 use media_cutnplay::ui::{icons, layout, player_view, shortcuts, theme};
@@ -312,8 +312,11 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
 
         Message::SetTranscode(settings) => {
-            // A destination picked for one container does not fit another.
-            if settings.container != state.transcode.container {
+            // A destination picked for one file type does not fit another.
+            let source_audio = active_audio_codec(state);
+            if settings.extension_for(source_audio.as_deref())
+                != state.transcode.extension_for(source_audio.as_deref())
+            {
                 state.transcode_output_path = None;
             }
             state.transcode = settings.limited_to(state.nvenc.unwrap_or_default());
@@ -327,13 +330,16 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
 
         Message::SelectTranscodeOutput => {
-            let extension = state.transcode.extension();
-            let initial_name = format!("{}_transcoded.{extension}", active_stem(state));
+            let settings = state.transcode;
+            let extension = settings.extension_for(active_audio_codec(state).as_deref());
+            let suffix = if settings.audio_only { "audio" } else { "transcoded" };
+            let initial_name = format!("{}_{suffix}.{extension}", active_stem(state));
+            let kind = if settings.audio_only { "Audio" } else { "Video" };
             Task::perform(
                 async move {
                     let file = rfd::AsyncFileDialog::new()
                         .set_file_name(&initial_name)
-                        .add_filter("Video", &[extension])
+                        .add_filter(kind, &[extension])
                         .save_file()
                         .await;
                     // The container follows the extension, so pin it.
@@ -351,11 +357,12 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
 
         Message::StartTranscode => {
-            if let Some(item) = state.active_item() {
+            if let Some(item) = state.active_item().filter(|item| state.transcode.accepts(item)) {
                 let input = item.file_path.clone();
-                let output = state.transcode_output_path.clone().unwrap_or_else(|| {
-                    default_transcode_output(&input, state.transcode.extension())
-                });
+                let output = state
+                    .transcode_output_path
+                    .clone()
+                    .unwrap_or_else(|| state.transcode.default_output(item));
                 state.start_transcodes(vec![(input, output)]);
             }
             Task::none()
@@ -363,16 +370,12 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
         Message::StartTranscodeAll => {
             // Each file goes next to its source; a chosen destination names one file only.
-            let extension = state.transcode.extension();
+            let settings = state.transcode;
             let jobs = state
                 .queue
                 .iter()
-                .filter(|item| item.video.is_some())
-                .map(|item| {
-                    let input = item.file_path.clone();
-                    let output = default_transcode_output(&input, extension);
-                    (input, output)
-                })
+                .filter(|item| settings.accepts(item))
+                .map(|item| (item.file_path.clone(), settings.default_output(item)))
                 .collect();
             state.start_transcodes(jobs);
             Task::none()
@@ -555,6 +558,11 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 }
 
 /// File name of the active item without its extension.
+/// Decoder name of the active file's audio, which names copied audio.
+fn active_audio_codec(state: &AppState) -> Option<String> {
+    state.active_item()?.audio.as_ref().map(|audio| audio.codec.clone())
+}
+
 fn active_stem(state: &AppState) -> String {
     state
         .active_item()

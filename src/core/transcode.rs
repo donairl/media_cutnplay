@@ -1,6 +1,9 @@
 //! Whole-file transcoding: re-encode the video, re-encode or copy the audio.
+//! In audio-only mode the video is dropped and only the main audio track
+//! is kept, re-encoded or copied.
 
 use crate::core::error::MediaError;
+use crate::core::metadata::MediaMetadata;
 use ffmpeg_next::{
     codec, decoder, encoder, filter, format, frame, media, picture, ChannelLayout, Dictionary,
     Packet, Rational, Rescale,
@@ -216,7 +219,11 @@ pub struct TranscodeSettings {
     /// Audio bitrate in kbit/s for a stereo pair; surround scales with
     /// channel count. Ignored when the audio is copied.
     pub audio_kbps: u16,
+    /// Video container. Ignored in audio-only mode, where the file type
+    /// follows the audio codec.
     pub container: Container,
+    /// Drop the video and keep only the main audio track.
+    pub audio_only: bool,
 }
 
 impl Default for TranscodeSettings {
@@ -232,17 +239,50 @@ impl Default for TranscodeSettings {
             audio: AudioMode::Aac,
             audio_kbps: 160,
             container: Container::Mp4,
+            audio_only: false,
         }
     }
 }
 
 impl TranscodeSettings {
-    /// File extension of the chosen container.
+    /// File extension of the output when the source is unknown.
     pub fn extension(&self) -> &'static str {
-        match self.container {
-            Container::Mp4 => "mp4",
-            Container::Mkv => "mkv",
+        self.extension_for(None)
+    }
+
+    /// File extension of the output for a source whose audio decoder is
+    /// `source_audio`: the chosen container, or in audio-only mode a type
+    /// that fits the audio codec.
+    pub fn extension_for(&self, source_audio: Option<&str>) -> &'static str {
+        match (self.audio_only, self.audio) {
+            (false, _) => match self.container {
+                Container::Mp4 => "mp4",
+                Container::Mkv => "mkv",
+            },
+            (true, AudioMode::Aac) => "m4a",
+            (true, AudioMode::Opus) => "opus",
+            (true, AudioMode::Copy) => source_audio.map_or("mka", copied_audio_extension),
         }
+    }
+
+    /// Whether `item` has what these settings need: a video track, or in
+    /// audio-only mode an audio track.
+    pub fn accepts(&self, item: &MediaMetadata) -> bool {
+        if self.audio_only {
+            item.audio.is_some()
+        } else {
+            item.video.is_some()
+        }
+    }
+
+    /// Where `item` goes when no destination was chosen: next to the source,
+    /// named after it.
+    pub fn default_output(&self, item: &MediaMetadata) -> PathBuf {
+        let input = &item.file_path;
+        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("media");
+        let suffix = if self.audio_only { "audio" } else { "transcoded" };
+        let extension = self.extension_for(item.audio.as_ref().map(|a| a.codec.as_str()));
+        input.with_file_name(format!("{stem}_{suffix}.{extension}"))
     }
 
     /// FFmpeg name of the video encoder these settings select.
@@ -417,20 +457,28 @@ where
     let mut ictx = format::input(input_path)?;
     let mut octx = format::output(output_path)?;
 
-    let main_video = ictx
-        .streams()
-        .best(media::Type::Video)
-        .map(|s| s.index())
-        .ok_or(MediaError::NoVideoStream)?;
+    // The stream that drives progress: the picture, or in audio-only mode
+    // the one audio track kept.
+    let main = if settings.audio_only {
+        ictx.streams().best(media::Type::Audio).ok_or(MediaError::NoAudioStream)?
+    } else {
+        ictx.streams().best(media::Type::Video).ok_or(MediaError::NoVideoStream)?
+    }
+    .index();
     // Text subtitles survive a copy into Matroska; MP4 would reject them.
-    let keep_subtitles = output_path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
+    let keep_subtitles = !settings.audio_only
+        && output_path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
 
     let mut pipes: Vec<Option<Pipe>> = Vec::new();
     for (src_idx, istream) in ictx.streams().enumerate() {
         let medium = istream.parameters().medium();
-        let pipe = if src_idx == main_video {
+        let pipe = if settings.audio_only && src_idx != main {
+            // Audio-only files keep one track: players pick the first anyway,
+            // and MP3/Opus files cannot hold more.
+            None
+        } else if src_idx == main && !settings.audio_only {
             Some(Pipe::Video(VideoPipe::new(&istream, &mut octx, settings)?))
         } else if medium == media::Type::Audio && settings.audio != AudioMode::Copy {
             Some(Pipe::Audio(AudioPipe::new(
@@ -453,7 +501,7 @@ where
     octx.write_header()?;
 
     let duration = (ictx.duration() as f64 / f64::from(ffmpeg_next::ffi::AV_TIME_BASE)).max(0.001);
-    let start = match ictx.stream(main_video) {
+    let start = match ictx.stream(main) {
         Some(s) if s.start_time() != ffmpeg_next::ffi::AV_NOPTS_VALUE => {
             s.start_time() as f64 * f64::from(s.time_base())
         }
@@ -467,7 +515,7 @@ where
         }
         let src_idx = stream.index();
 
-        if src_idx == main_video {
+        if src_idx == main {
             let at = packet.dts().or(packet.pts()).unwrap_or(0) as f64
                 * f64::from(stream.time_base());
             let progress = (((at - start) / duration) as f32).clamp(0.0, 0.999);
@@ -694,6 +742,19 @@ impl VideoPipe {
 fn audio_bit_rate(kbps: u16, channels: i32) -> usize {
     let pairs = (channels.max(2) as usize).div_ceil(2);
     usize::from(kbps) * 1000 * pairs
+}
+
+/// File extension for a copied audio track, from its decoder name.
+/// Matroska audio takes any codec, so it covers the rest.
+fn copied_audio_extension(decoder: &str) -> &'static str {
+    match decoder {
+        "aac" | "aac_fixed" | "alac" => "m4a",
+        "mp3" | "mp3float" => "mp3",
+        "opus" | "libopus" => "opus",
+        "flac" => "flac",
+        "vorbis" | "libvorbis" => "ogg",
+        _ => "mka",
+    }
 }
 
 /// The sample rate to encode at: the source's when the encoder takes it,
@@ -992,6 +1053,24 @@ mod tests {
         assert_eq!(audio_bit_rate(128, 2), 128_000);
         assert_eq!(audio_bit_rate(128, 6), 384_000);
         assert_eq!(audio_bit_rate(160, 8), 640_000);
+    }
+
+    #[test]
+    fn audio_only_names_the_file_after_the_codec() {
+        let audio = TranscodeSettings { audio_only: true, ..TranscodeSettings::default() };
+        assert_eq!(audio.extension_for(Some("mp3float")), "m4a");
+        let opus = audio.with_audio(AudioMode::Opus);
+        assert_eq!(opus.extension_for(Some("aac")), "opus");
+        let copy = audio.with_audio(AudioMode::Copy);
+        assert_eq!(copy.extension_for(Some("aac")), "m4a");
+        assert_eq!(copy.extension_for(Some("mp3float")), "mp3");
+        assert_eq!(copy.extension_for(Some("flac")), "flac");
+        assert_eq!(copy.extension_for(Some("vorbis")), "ogg");
+        assert_eq!(copy.extension_for(Some("ac3")), "mka");
+        assert_eq!(copy.extension_for(None), "mka");
+        // Video mode ignores the audio for naming.
+        let video = TranscodeSettings::default().with_audio(AudioMode::Copy);
+        assert_eq!(video.extension_for(Some("mp3float")), "mp4");
     }
 
     #[test]

@@ -107,6 +107,56 @@ fn test_transcode_audio_to_opus_in_mp4_and_mkv() {
 }
 
 #[test]
+fn test_extract_audio_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mkv");
+    make_clip(&src);
+    ffmpeg_next::init().unwrap();
+    let source = probe_file(&src).unwrap();
+
+    let audio_only = TranscodeSettings { audio_only: true, ..TranscodeSettings::default() };
+    for (mode, extension, codec) in [
+        (AudioMode::Aac, "m4a", "aac"),
+        (AudioMode::Opus, "opus", "opus"),
+        // The source audio is MP3: copied, it lands in an .mp3 file.
+        (AudioMode::Copy, "mp3", "mp3"),
+    ] {
+        let settings = audio_only.with_audio(mode);
+        let out = settings.default_output(&source);
+        assert_eq!(out.file_name().unwrap().to_str().unwrap(), format!("clip_audio.{extension}"));
+        transcode(&src, &out, &settings, &AtomicBool::new(false), |_| {}).unwrap();
+
+        assert_decodes_cleanly(&out);
+        let meta = probe_file(&out).unwrap();
+        assert!(meta.video.is_none(), "{mode:?} kept the video");
+        let audio = meta.audio.unwrap();
+        assert!(audio.codec.starts_with(codec), "{mode:?}: {}", audio.codec);
+        assert!((meta.duration_secs - 3.0).abs() < 0.15, "{mode:?} duration {}", meta.duration_secs);
+    }
+}
+
+#[test]
+fn test_extract_audio_fails_without_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("silent.mp4");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=30",
+            "-c:v", "libx264", src.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    ffmpeg_next::init().unwrap();
+
+    let out = dir.path().join("silent_audio.m4a");
+    let settings = TranscodeSettings { audio_only: true, ..TranscodeSettings::default() };
+    let result = transcode(&src, &out, &settings, &AtomicBool::new(false), |_| {});
+    assert!(matches!(result, Err(MediaError::NoAudioStream)), "{result:?}");
+    assert!(!out.exists(), "a failed extract left a file behind");
+}
+
+#[test]
 fn test_transcode_to_hevc_mkv_with_audio_copy() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("clip.mkv");

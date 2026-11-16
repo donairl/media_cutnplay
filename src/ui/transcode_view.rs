@@ -134,8 +134,19 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .into(),
     );
 
+    let mode_section = section_card(
+        "Output",
+        option_row(
+            "Keep",
+            vec![
+                ("Video + audio", !settings.audio_only, with(|s| s.audio_only = false)),
+                ("Audio only", settings.audio_only, with(|s| s.audio_only = true)),
+            ],
+        ),
+    );
+
     let output_section = section_card(
-        "Audio & container",
+        if settings.audio_only { "Audio" } else { "Audio & container" },
         column![
             option_row(
                 "Audio",
@@ -146,7 +157,8 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                 ],
             ),
             audio_bitrate_row(settings, busy),
-            option_row(
+        ]
+        .push((!settings.audio_only).then(|| option_row(
                 "Container",
                 vec![
                     (
@@ -160,14 +172,17 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
                         with(|s| s.container = Container::Mkv),
                     ),
                 ],
-            ),
-        ]
+            )))
+        .push(settings.audio_only.then(|| theme::supporting(audio_only_summary(state))))
         .spacing(10)
         .into(),
     );
 
-    let queued_videos = state.queue.iter().filter(|item| item.video.is_some()).count();
-    let default_name = format!("Default: <input>_transcoded.{}", settings.extension());
+    let queued_videos = state.queue.iter().filter(|item| settings.accepts(item)).count();
+    let default_name = match state.active_item() {
+        Some(item) => format!("Default: {}", file_name(&settings.default_output(item))),
+        None => format!("Default: <input>_transcoded.{}", settings.extension()),
+    };
     let output_name = state
         .transcode_output_path
         .as_ref()
@@ -192,15 +207,21 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
         .into(),
     );
 
-    let has_video = state.active_item().is_some_and(|item| item.video.is_some());
+    let has_video = state.active_item().is_some_and(|item| settings.accepts(item));
+    let (start_label, all_label, again_label, running_label) = if settings.audio_only {
+        ("Extract audio", "Extract all", "Extract again", "Extracting")
+    } else {
+        ("Start transcode", "Transcode all", "Transcode again", "Transcoding")
+    };
     // Primary action, plus "all" once there is more than one video to do.
     let start = |label: &'a str, style| -> Element<'a, Message> {
         let one = action_button(icons::TRANSFORM, label, style)
             .on_press_maybe(has_video.then_some(Message::StartTranscode));
         if queued_videos > 1 {
-            let all = action_button(icons::TRANSFORM, "Transcode all", theme::outlined)
+            let all = action_button(icons::TRANSFORM, all_label, theme::outlined)
                 .on_press(Message::StartTranscodeAll);
-            column![one, all, theme::supporting(format!("All {queued_videos} videos in the queue."))]
+            let what = if settings.audio_only { "files" } else { "videos" };
+            column![one, all, theme::supporting(format!("All {queued_videos} {what} in the queue."))]
                 .spacing(8)
                 .into()
         } else {
@@ -210,17 +231,17 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     let batch = state.transcode_total > 1;
 
     let action_section: Element<'a, Message> = match &state.transcode_status {
-        ExportStatus::Idle => start("Start transcode", theme::filled),
+        ExportStatus::Idle => start(start_label, theme::filled),
         ExportStatus::Processing { progress, output_path } => {
             let label = if batch {
                 format!(
-                    "Transcoding {}/{}... {:.0}%",
+                    "{running_label} {}/{}... {:.0}%",
                     state.transcode_job_number(),
                     state.transcode_total,
                     progress * 100.0
                 )
             } else {
-                format!("Transcoding... {:.0}%", progress * 100.0)
+                format!("{running_label}... {:.0}%", progress * 100.0)
             };
             column![
                 theme::body(label),
@@ -246,7 +267,7 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
             };
             column![
                 status_line(icons::CHECK_CIRCLE, message, theme::SUCCESS),
-                start("Transcode again", theme::tonal),
+                start(again_label, theme::tonal),
             ]
             .spacing(10)
             .into()
@@ -262,7 +283,13 @@ pub fn view<'a>(state: &'a AppState) -> Element<'a, Message> {
     container(
         column![
             theme::title("Transcode"),
-            scrollable(column![video_section, output_section, destination_section].spacing(12))
+            scrollable(
+                column![mode_section]
+                    .push((!settings.audio_only).then_some(video_section))
+                    .push(output_section)
+                    .push(destination_section)
+                    .spacing(12),
+            )
                 .height(Length::Fill)
                 .spacing(4)
                 .style(theme::scroll),
@@ -293,6 +320,22 @@ fn output_summary(state: &AppState) -> String {
             }
         }
         None => "Select a video to transcode.".to_string(),
+    }
+}
+
+/// What audio-only mode will write for the active file.
+fn audio_only_summary(state: &AppState) -> String {
+    let settings = state.transcode;
+    match state.active_item().map(|item| item.audio.as_ref()) {
+        Some(Some(audio)) => {
+            let extension = settings.extension_for(Some(&audio.codec));
+            match settings.audio {
+                AudioMode::Copy => format!("Main audio track copied as is to .{extension}, no video."),
+                _ => format!("Main audio track re-encoded to .{extension}, no video."),
+            }
+        }
+        Some(None) => "The selected file has no audio track.".to_string(),
+        None => "Select a file to extract its audio.".to_string(),
     }
 }
 
